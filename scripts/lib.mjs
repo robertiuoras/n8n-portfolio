@@ -64,9 +64,10 @@ export const wait = (name, secondsExpr) => ({
   name, type: 'n8n-nodes-base.wait', typeVersion: 1.1, webhookId: uid('wait' + name),
   parameters: { resume: 'timeInterval', amount: secondsExpr, unit: 'seconds' } });
 
-// gemini-2.5-flash answers 404 "no longer available to new users" (checked 2026-10-09 against the live model list);
-// gemini-3.8-flash answered 503 "high demand" the same morning. 3.5-flash answered on the free tier.
-export const LLM_MODEL = 'models/gemini-3.5-flash';
+// Free-tier limits read from the project's quota API on 2026-10-09: every gemini-3.x "flash" model allows 20 requests
+// a day and 5 a minute (one test run plus the 20-question eval used it up), while gemini-3.5-flash-lite allows 500 a day
+// and 15 a minute. gemini-2.5-flash answers 404 "no longer available to new users".
+export const LLM_MODEL = 'models/gemini-3.5-flash-lite';
 export const geminiModel = (name) => ({
   name, type: '@n8n/n8n-nodes-langchain.lmChatGoogleGemini', typeVersion: 1,
   parameters: { modelName: LLM_MODEL, options: { temperature: 0 } },
@@ -74,8 +75,12 @@ export const geminiModel = (name) => ({
 export const parser = (name, schema) => ({
   name, type: '@n8n/n8n-nodes-langchain.outputParserStructured', typeVersion: 1.3,
   parameters: { schemaType: 'manual', inputSchema: JSON.stringify(schema, null, 1) } });
+// The AI step retries twice, 5 s apart, before its error falls through to the fallback branch: on the Gemini free tier
+// a burst gets "too many requests" (4 of 20 eval questions on 2026-10-09 with no retry), and that should cost a few
+// seconds, not a handoff.
 export const chain = (name, textExpr, system) => ({
   name, type: '@n8n/n8n-nodes-langchain.chainLlm', typeVersion: 1.9, onError: 'continueRegularOutput',
+  retryOnFail: true, maxTries: 3, waitBetweenTries: 5000,
   parameters: { promptType: 'define', text: textExpr, hasOutputParser: true,
     messages: { messageValues: [{ message: system }] } } });
 

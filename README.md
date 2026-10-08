@@ -18,19 +18,19 @@ A tiny fake CRM API built as an n8n workflow (create/update a contact, look one 
 ## 2. ai-lead-qualify
 ![canvas](screenshots/ai-lead-qualify.png)
 **Problem it solves:** inbound enquiries need a quick, consistent first read: what do they want, how urgent, how likely to buy, and does a human need to look.
-**How it behaves:** Google Gemini returns a structured answer (intent, budget, urgency, score 0-100, summary, needs-human). If the AI is down or returns nonsense the lead is NOT dropped: it is saved with `needs_human = true`. The lead is saved to the CRM with the same retry rules as above, and a score of 70 or more writes a "hot lead" row (stand-in for a Slack or email alert).
-**Tested:** input checks, the AI-down fallback (real), and the scoring and alert branches with the Gemini step replaced by a fixed answer. **The live Gemini call is untested: no Gemini key was available.**
+**How it behaves:** Google Gemini (free tier, `gemini-3.5-flash-lite`) returns a structured answer (intent, budget, urgency, score 0-100, summary, needs-human). The AI step retries twice, 5 seconds apart, on a rate limit or error. If the AI is still down or returns nonsense the lead is NOT dropped: it is saved with `needs_human = true`. The lead is saved to the CRM with the same retry rules as above, and a score of 70 or more writes a "hot lead" row (stand-in for a Slack or email alert).
+**Tested:** input checks, a real Gemini call (the lead is scored, saved to the CRM and, at 70 or more, flagged as hot), the AI-outage fallback, unusable AI output, and the scoring and alert branches with the Gemini step replaced by a fixed answer.
 
 ## 3. support-bot-with-fallback and support-bot-eval
 ![canvas](screenshots/support-bot-with-fallback.png)
 **Problem it solves:** a support bot that only answers from the company's own FAQ (a fictional "Acme Solar" FAQ, 12 answers in `faq.json`) and says "I can't answer that reliably" instead of guessing, passing the question to a human.
 **How it behaves:** the AI must say whether the FAQ supports the answer, how confident it is (0 to 1) and which FAQ entries it used. Unsupported, under 0.6 confidence, unusable output, or a cited FAQ entry that does not exist all lead to a refusal plus a row in a handoff table.
 **Eval:** `support-bot-eval` (manual run) sends 20 questions (14 answerable, 6 not, `tests/support-eval.json`) to the bot and records accuracy, correct-refusal rate and wrong-answer count in the `eval_runs` table. ![eval](screenshots/support-bot-eval.png)
-**Tested:** refusal and handoff branches (AI-down for real, answer/refuse branches with a fixed AI answer) and a real eval run with the AI unavailable (accuracy 0.3 = refuse everything; it proves the harness, not answer quality). **Answer quality with real Gemini is unmeasured.**
+**Tested:** a real Gemini answer to an in-FAQ question (cites the right entry, no handoff), a real Gemini refusal of an off-FAQ question (handoff row written), the AI-outage path, and every refuse branch with the Gemini step replaced by a fixed answer. **Real eval, 2026-10-09, `gemini-3.5-flash-lite`, one run of the 20 questions:** 14 of 14 answerable questions answered citing the expected FAQ entry, 6 of 6 off-topic questions refused and handed off, 0 wrong answers, 0 questions lost to the AI being unavailable (accuracy 1.0, correct-refusal rate 1.0). That is one run on a small, easy question set, not a general accuracy figure; the per-question table is in RESULTS.md.
 
 ## 4. error-handler
 ![canvas](screenshots/error-handler.png)
 **Problem it solves:** automations fail quietly. Any workflow pointing at this one as its Error Workflow gets its crash written to a `workflow_errors` table (workflow, step, message, run id, time). `error-demo` crashes on purpose to prove it.
 
 ## Rebuilding
-`node scripts/gen-workflows.mjs` (writes `workflows/`), `node scripts/setup.mjs` (creates tables, imports and activates), then `bash tests/run.sh`. The AI workflows need an n8n credential "Gemini free tier" (Google Gemini(PaLM) API) with a free Google AI Studio key.
+`node scripts/gen-workflows.mjs` (writes `workflows/`), `node scripts/setup.mjs` (creates tables, imports and activates), then `bash tests/run.sh`. The AI workflows use an n8n credential "Gemini free tier" (Google Gemini(PaLM) API); `setup.mjs` creates or updates it from the `GEMINI_API_KEY` environment variable (a free-tier key from a Google Cloud project with billing off, so it cannot be charged). Each full test run spends about 25 Gemini requests; the free tier for `gemini-3.5-flash-lite` allows 500 a day and 15 a minute, which is why the eval sends one question every 8 seconds.

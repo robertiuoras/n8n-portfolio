@@ -9,7 +9,9 @@ const KEY = execFileSync('node', [process.env.HOME + '/Projects/claude-memory/cl
 const api = async (m, p, b) => { const r = await fetch('http://localhost:5678' + p, { method: m, headers: { 'X-N8N-API-KEY': KEY, 'content-type': 'application/json' }, body: b ? JSON.stringify(b) : undefined }); const t = await r.text(); if (!r.ok) throw new Error(m + ' ' + p + ' ' + r.status + ' ' + t.slice(0, 300)); return t ? JSON.parse(t) : {}; };
 const stubName = name + ' [LLM STUB TEST]';
 const existing = (await api('GET', '/api/v1/workflows?limit=250')).data.find((w) => w.name === stubName);
-if (existing) { await api('POST', `/api/v1/workflows/${existing.id}/deactivate`).catch(() => {}); await api('DELETE', `/api/v1/workflows/${existing.id}`); }
+// n8n 2.x answers 409 "still being unpublished" for a moment after deactivate, so the delete is retried.
+const del = async (id) => { for (let i = 0; ; i++) { try { return await api('DELETE', `/api/v1/workflows/${id}`); } catch (e) { if (i >= 15 || !/ 409 /.test(e.message)) throw e; await new Promise((r) => setTimeout(r, 1000)); } } };
+if (existing) { await api('POST', `/api/v1/workflows/${existing.id}/deactivate`).catch(() => {}); await del(existing.id); }
 if (cmd === 'delete') process.exit(0);
 const w = JSON.parse(fs.readFileSync(root + 'workflows/' + name + '.json', 'utf8'));
 w.name = stubName; delete w.settings.errorWorkflow;
