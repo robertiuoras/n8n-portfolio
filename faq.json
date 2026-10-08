@@ -1,0 +1,14 @@
+[
+ {"id":"faq-01","q":"How do I get a quote?","a":"Fill in the quote form on our website or call us. We reply within one business day and book a free roof assessment."},
+ {"id":"faq-02","q":"Which areas do you install in?","a":"We install across Queensland and northern New South Wales. We do not currently install elsewhere."},
+ {"id":"faq-03","q":"How long does an installation take?","a":"A typical home system is installed in one to two days after approvals are in place."},
+ {"id":"faq-04","q":"How much roof space do I need?","a":"Roughly 1.8 square metres per panel. A 6.6 kW system of 15 panels needs about 27 square metres of usable roof."},
+ {"id":"faq-05","q":"What warranty do I get?","a":"Panels carry a 25-year performance warranty, inverters 10 years, and our workmanship is covered for 5 years."},
+ {"id":"faq-06","q":"Do you handle the paperwork for the feed-in tariff and grid connection?","a":"Yes. We lodge the grid connection application and the feed-in tariff paperwork on your behalf at no extra cost."},
+ {"id":"faq-07","q":"Do you offer finance?","a":"Yes. We offer 0 percent interest payment plans for up to 24 months through a partner lender, subject to approval."},
+ {"id":"faq-08","q":"Can I add a battery later?","a":"Yes, if your inverter is battery-ready. We check this during the assessment and can retrofit a battery at any time."},
+ {"id":"faq-09","q":"Does my system work during a blackout?","a":"Standard systems switch off during a blackout for safety. Only systems with a battery and backup gateway can supply power during an outage."},
+ {"id":"faq-10","q":"How often should I clean the panels?","a":"Rain usually keeps them clean. We suggest a gentle rinse once or twice a year if you are in a dusty area."},
+ {"id":"faq-11","q":"What are your support hours?","a":"Our support team is available 8am to 5pm AEST, Monday to Friday. Emergencies are answered by phone 24/7."},
+ {"id":"faq-12","q":"How can I monitor my system's production?","a":"Every system includes the Acme Solar app, which shows live and historical production and savings."}
+]

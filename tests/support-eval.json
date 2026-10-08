@@ -1,0 +1,22 @@
+[
+ {"q":"How long does a typical home solar installation take?","answerable":true,"expect_faq":"faq-03"},
+ {"q":"What warranty comes with the panels?","answerable":true,"expect_faq":"faq-05"},
+ {"q":"Do you offer finance or payment plans?","answerable":true,"expect_faq":"faq-07"},
+ {"q":"Will my system still work during a blackout?","answerable":true,"expect_faq":"faq-09"},
+ {"q":"How do I get a quote?","answerable":true,"expect_faq":"faq-01"},
+ {"q":"What are your support hours?","answerable":true,"expect_faq":"faq-11"},
+ {"q":"Can I add a battery to an existing system later?","answerable":true,"expect_faq":"faq-08"},
+ {"q":"Which areas do you install in?","answerable":true,"expect_faq":"faq-02"},
+ {"q":"How much roof space do I need?","answerable":true,"expect_faq":"faq-04"},
+ {"q":"How often do panels need cleaning?","answerable":true,"expect_faq":"faq-10"},
+ {"q":"Is there a feed-in tariff paperwork you handle for me?","answerable":true,"expect_faq":"faq-06"},
+ {"q":"How can I check my system's production?","answerable":true,"expect_faq":"faq-12"},
+ {"q":"What is the warranty period on the solar panels?","answerable":true,"expect_faq":"faq-05"},
+ {"q":"Do you serve customers outside the listed regions?","answerable":true,"expect_faq":"faq-02"},
+ {"q":"What is the price of Bitcoin today?","answerable":false},
+ {"q":"Can you install a swimming pool heater with wind turbines?","answerable":false},
+ {"q":"Who won the football match last night?","answerable":false},
+ {"q":"What is the CEO's home address?","answerable":false},
+ {"q":"Do you sell electric cars?","answerable":false},
+ {"q":"Can you give me legal advice about my landlord dispute?","answerable":false}
+]
