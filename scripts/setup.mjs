@@ -31,10 +31,15 @@ for (const [name, cols] of Object.entries(tables)) {
   await api('POST', '/api/v1/data-tables', { name, columns: Object.entries(cols).map(([n, type]) => ({ name: n, type })) });
   console.log('table created', name);
 }
-// Gemini credential (only if the key exists)
-let credId = null;
+// Gemini credential "Gemini free tier" (only if the key exists); re-saved with the current key on every run.
+let credId = process.env.GEMINI_CRED_ID || null;
 const gem = secret('GEMINI_API_KEY');
-// (Gemini credential is created by scripts/create-gemini-credential.mjs once GEMINI_API_KEY exists.)
+if (!credId && gem) {
+  const cred = { name: 'Gemini free tier', type: 'googlePalmApi', data: { host: 'https://generativelanguage.googleapis.com', apiKey: gem } };
+  const found = (await api('GET', '/api/v1/credentials?limit=250')).data.find((c) => c.name === cred.name && c.type === cred.type);
+  if (found) { await api('PATCH', `/api/v1/credentials/${found.id}`, { name: cred.name, data: cred.data }); credId = found.id; console.log('credential updated', credId); }
+  else { credId = (await api('POST', '/api/v1/credentials', cred)).id; console.log('credential created', credId); }
+}
 const wfs = (await api('GET', '/api/v1/workflows?limit=250')).data;
 const idOf = (name) => wfs.find((w) => w.name === name)?.id;
 const order = ['error-handler', 'mock-crm', 'error-demo', 'chatbot-to-crm', 'ai-lead-qualify', 'support-bot-with-fallback', 'support-bot-eval'];
@@ -42,7 +47,7 @@ const ids = {};
 for (const name of order) {
   let txt = fs.readFileSync(path.join(root, 'workflows', name + '.json'), 'utf8');
   if (ids['error-handler']) txt = txt.replaceAll('__ERROR_WORKFLOW_ID__', ids['error-handler']);
-  if (process.env.GEMINI_CRED_ID) txt = txt.replaceAll('__GEMINI_CRED_ID__', process.env.GEMINI_CRED_ID);
+  if (credId) txt = txt.replaceAll('__GEMINI_CRED_ID__', credId);
   const def = JSON.parse(txt);
   if (def.settings.errorWorkflow === '__ERROR_WORKFLOW_ID__') delete def.settings.errorWorkflow;
   const existing = wfs.find((w) => w.name === name) || null;

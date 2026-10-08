@@ -51,20 +51,22 @@ export const dtUpdate = (name, table, filters, values) => ({
   name, type: 'n8n-nodes-base.dataTable', typeVersion: 1.1,
   parameters: { resource: 'row', operation: 'update', dataTableId: tbl(table), matchType: 'allConditions', filters: eqs(filters), columns: cols(values), options: {} } });
 
-export const httpReq = (name, method, url, { headers, body, query, timeout = 10000 } = {}) => ({
+export const httpReq = (name, method, url, { headers, body, query, timeout = 10000, batch } = {}) => ({
   name, type: 'n8n-nodes-base.httpRequest', typeVersion: 4.5, onError: 'continueRegularOutput',
   parameters: {
     method, url,
     ...(query ? { sendQuery: true, queryParameters: { parameters: Object.entries(query).map(([n, value]) => ({ name: n, value })) } } : {}),
     ...(headers ? { sendHeaders: true, headerParameters: { parameters: Object.entries(headers).map(([n, value]) => ({ name: n, value })) } } : {}),
     ...(body ? { sendBody: true, specifyBody: 'json', jsonBody: body } : {}),
-    options: { timeout, response: { response: { fullResponse: true, neverError: true } } } } });
+    options: { timeout, ...(batch ? { batching: { batch } } : {}), response: { response: { fullResponse: true, neverError: true } } } } });
 
 export const wait = (name, secondsExpr) => ({
   name, type: 'n8n-nodes-base.wait', typeVersion: 1.1, webhookId: uid('wait' + name),
   parameters: { resume: 'timeInterval', amount: secondsExpr, unit: 'seconds' } });
 
-export const LLM_MODEL = 'models/gemini-2.5-flash';
+// gemini-2.5-flash answers 404 "no longer available to new users" (checked 2026-10-09 against the live model list);
+// gemini-3.8-flash answered 503 "high demand" the same morning. 3.5-flash answered on the free tier.
+export const LLM_MODEL = 'models/gemini-3.5-flash';
 export const geminiModel = (name) => ({
   name, type: '@n8n/n8n-nodes-langchain.lmChatGoogleGemini', typeVersion: 1,
   parameters: { modelName: LLM_MODEL, options: { temperature: 0 } },

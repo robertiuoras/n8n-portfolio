@@ -111,7 +111,7 @@
       "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
       "typeVersion": 1,
       "parameters": {
-        "modelName": "models/gemini-2.5-flash",
+        "modelName": "models/gemini-3.5-flash",
         "options": {
           "temperature": 0
         }

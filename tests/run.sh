@@ -93,7 +93,7 @@ GEM=$(node "$SECRETS" get GEMINI_API_KEY 2>/dev/null || true)
 EL="lead-live-$RUN@demo.test"
 post $LEAD "$(jq -nc --arg e $EL '{name:"Live Lead",email:$e,message:"Hi, we run 3 clinics and want to automate booking reminders. Budget around $4k, hoping to start this month.",source:"web"}')"
 if [ -n "$GEM" ]; then
-  expect "lead: REAL Gemini call returns a valid qualification" "$([ "$CODE" = 200 ] && [ "$(jq -r .used_fallback <<<"$BODY")" = false ] && echo true)" "HTTP $CODE $(jq -c '.qualification' <<<"$BODY")"
+  expect "lead: REAL Gemini call returns a valid qualification and the lead is saved" "$([ "$CODE" = 200 ] && [ "$(jq -r .used_fallback <<<"$BODY")" = false ] && [ "$(jq -r '.qualification.score|type' <<<"$BODY")" = number ] && [ "$(count mock_crm_contacts email $EL)" = 1 ] && echo true)" "HTTP $CODE in ${TIME}s $(jq -c '{qualification,hot_lead_notified}' <<<"$BODY"); CRM contacts=$(count mock_crm_contacts email $EL), notifications=$(count notifications email $EL)"
 else
   expect "lead: AI unavailable (no Gemini key) -> falls back to needs_human=true, still saved to CRM, no hot-lead alert" "$([ "$CODE" = 200 ] && [ "$(jq -r .used_fallback <<<"$BODY")" = true ] && [ "$(jq -r .qualification.needs_human <<<"$BODY")" = true ] && [ "$(count mock_crm_contacts email $EL)" = 1 ] && [ "$(count notifications email $EL)" = 0 ] && echo true)" "HTTP $CODE used_fallback=$(jq -r .used_fallback <<<"$BODY") reason=\"$(jq -r .fallback_reason <<<"$BODY")\"; CRM contacts=$(count mock_crm_contacts email $EL), notifications=$(count notifications email $EL)"
 fi
@@ -112,6 +112,9 @@ expect "lead (AI stubbed): unusable AI output -> needs_human=true fallback inste
 EF="leadfail-$RUN@demo.test"
 post $STUB "$(jq -nc --arg e $EF '{name:"Fail Fay",email:$e,message:"hello there"}')" 'x-stub-llm: {"intent":"buy","budget_mentioned":null,"urgency":"high","score":80,"summary":"s","needs_human":false}' "x-fail: 500x2"
 expect "lead (AI stubbed): CRM fails twice then succeeds (same retry pattern)" "$([ "$CODE" = 200 ] && [ "$(count mock_crm_log email $EF)" = 3 ] && [ "$(count notifications email $EF)" = 1 ] && echo true)" "HTTP $CODE; CRM calls=$(count mock_crm_log email $EF); notifications=$(count notifications email $EF)"
+EO="outage-$RUN@demo.test"
+post $STUB "$(jq -nc --arg e $EO '{name:"Outage Olly",email:$e,message:"Please call me about a quote"}')" 'x-stub-llm: error'
+expect "lead (AI stubbed): AI outage -> needs_human=true fallback, still saved to CRM, no hot-lead alert" "$([ "$CODE" = 200 ] && [ "$(jq -r .used_fallback <<<"$BODY")" = true ] && [ "$(jq -r .qualification.needs_human <<<"$BODY")" = true ] && [ "$(count mock_crm_contacts email $EO)" = 1 ] && [ "$(count notifications email $EO)" = 0 ] && echo true)" "HTTP $CODE used_fallback=$(jq -r .used_fallback <<<"$BODY") reason=\"$(jq -r .fallback_reason <<<"$BODY")\"; CRM contacts=$(count mock_crm_contacts email $EO), notifications=$(count notifications email $EO)"
 node scripts/stub-variant.mjs delete ai-lead-qualify "Qualify Lead" >/dev/null
 
 echo "== support-bot-with-fallback"
@@ -121,7 +124,11 @@ expect "support: missing question is rejected (400)" "$([ "$CODE" = 400 ] && ech
 Q1="How long does the install take? ($RUN)"
 post $SUP "$(jq -nc --arg q "$Q1" '{question:$q}')"
 if [ -n "$GEM" ]; then
-  expect "support: REAL Gemini answers an in-FAQ question with a source" "$([ "$(jq -r .answered <<<"$BODY")" = true ] && echo true)" "HTTP $CODE $(jq -c . <<<"$BODY")"
+  expect "support: REAL Gemini answers an in-FAQ question from the right FAQ entry" "$([ "$(jq -r .answered <<<"$BODY")" = true ] && [ "$(jq -r '.sources|index("faq-03") != null' <<<"$BODY")" = true ] && [ "$(count handoffs question "$Q1")" = 0 ] && echo true)" "HTTP $CODE in ${TIME}s $(jq -c . <<<"$BODY"); handoffs rows=$(count handoffs question "$Q1")"
+  Q2="What will the weather be in Sydney tomorrow? ($RUN)"
+  post $SUP "$(jq -nc --arg q "$Q2" '{question:$q}')"
+  h2=$(rows handoffs question "$Q2" | jq -r '.[0].reason')
+  expect "support: REAL Gemini refuses a question the FAQ does not cover and hands it off" "$([ "$(jq -r .answered <<<"$BODY")" = false ] && [ "$(count handoffs question "$Q2")" = 1 ] && [ "${h2#ai_}" = "$h2" ] && echo true)" "HTTP $CODE answered=$(jq -r .answered <<<"$BODY"); handoffs row reason=$h2"
 else
   expect "support: AI unavailable (no Gemini key) -> honest refusal and a handoff row" "$([ "$CODE" = 200 ] && [ "$(jq -r .answered <<<"$BODY")" = false ] && [ "$(jq -r .reason <<<"$BODY")" = ai_unavailable ] && [ "$(count handoffs question "$Q1")" = 1 ] && echo true)" "HTTP $CODE answered=$(jq -r .answered <<<"$BODY") reason=$(jq -r .reason <<<"$BODY"); handoffs rows=$(count handoffs question "$Q1")"
 fi
@@ -139,6 +146,9 @@ expect "support (AI stubbed): confidence 0.4 (< 0.6) -> refusal + handoff row" "
 Qd="Stub: invented source? $RUN"
 post $SS "$(jq -nc --arg q "$Qd" '{question:$q}')" 'x-stub-llm: {"answer":"Yes.","supported":true,"confidence":0.95,"source_faq_ids":["faq-99"]}'
 expect "support (AI stubbed): confident answer citing a FAQ id that does not exist -> refused" "$([ "$(jq -r .answered <<<"$BODY")" = false ] && [ "$(rows handoffs question "$Qd" | jq -r '.[0].reason')" = no_valid_source ] && echo true)" "answered=$(jq -r .answered <<<"$BODY"); handoffs row reason=$(rows handoffs question "$Qd" | jq -r '.[0].reason')"
+Qe="Stub: outage? $RUN"
+post $SS "$(jq -nc --arg q "$Qe" '{question:$q}')" 'x-stub-llm: error'
+expect "support (AI stubbed): AI outage -> honest refusal and a handoff row" "$([ "$CODE" = 200 ] && [ "$(jq -r .answered <<<"$BODY")" = false ] && [ "$(rows handoffs question "$Qe" | jq -r '.[0].reason')" = ai_unavailable ] && echo true)" "HTTP $CODE answered=$(jq -r .answered <<<"$BODY"); handoffs row reason=$(rows handoffs question "$Qe" | jq -r '.[0].reason')"
 node scripts/stub-variant.mjs delete support-bot-with-fallback "Answer From FAQ" >/dev/null
 
 echo "== error-handler"
@@ -151,17 +161,22 @@ echo "== support eval (20 questions)"
 EVAL_ID=$(jq -r '.["support-bot-eval"]' data/ids.json)
 before=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid eval_runs)/rows" | jq '.data|length')
 node scripts/run-manual.mjs support-bot-eval "Run Eval" >/dev/null 2>&1
-for i in $(seq 1 40); do c=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid eval_runs)/rows" | jq '.data|length'); [ "$c" -gt "$before" ] && break; sleep 2; done
+for i in $(seq 1 150); do c=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid eval_runs)/rows" | jq '.data|length'); [ "$c" -gt "$before" ] && break; sleep 2; done
 after=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid eval_runs)/rows" | jq '.data|length')
 last=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid eval_runs)/rows" | jq -c '.data|last|del(.details)')
-expect "eval: runs the 20-question set against the bot and writes a row to eval_runs" "$([ "$after" -eq $((before+1)) ] && [ "$(jq -r .total <<<"$last")" = 20 ] && echo true)" "eval_runs rows $before -> $after; $last; AI key present: $([ -n "$GEM" ] && echo yes || echo NO, so every question fell back to a handoff)"
+if [ -n "$GEM" ]; then
+  expect "eval: 20-question set against the REAL bot, every question reached Gemini, row written to eval_runs" "$([ "$after" -eq $((before+1)) ] && [ "$(jq -r .total <<<"$last")" = 20 ] && [ "$(jq -r .ai_unavailable <<<"$last")" = 0 ] && echo true)" "eval_runs rows $before -> $after; $last"
+  EVAL_DETAILS=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid eval_runs)/rows" | jq -r '.data|last|.details|fromjson|.[]|"| \(.n) | \(.q) | \(.verdict) | \(.reason // "") |"')
+else
+  expect "eval: runs the 20-question set against the bot and writes a row to eval_runs" "$([ "$after" -eq $((before+1)) ] && [ "$(jq -r .total <<<"$last")" = 20 ] && echo true)" "eval_runs rows $before -> $after; $last; AI key present: NO, so every question fell back to a handoff"
+fi
 
 {
   echo "# Test results"
   echo
   echo "- Run: $(date '+%Y-%m-%d %H:%M %Z') (run id $RUN)"
   echo "- n8n version: $(n8n --version 2>/dev/null)"
-  echo "- Gemini key available: $([ -n "$GEM" ] && echo yes || echo 'no (AI paths marked below)')"
+  echo "- Gemini key available: $([ -n "$GEM" ] && echo "yes (free tier, model $(node -e "import('./scripts/lib.mjs').then(m=>console.log(m.LLM_MODEL))"))" || echo 'no (AI paths marked below)')"
   echo "- Result: **$PASS passed, $FAIL failed**"
   echo "- Every case reads the outcome back from the Data Tables through the n8n API; the evidence column is the measured value."
   echo "- \"AI stubbed\" cases replace only the Gemini step with a fixed answer (header x-stub-llm); every node after it is the real workflow."
@@ -169,6 +184,11 @@ expect "eval: runs the 20-question set against the bot and writes a row to eval_
   echo "| Case | Result | Evidence |"
   echo "|---|---|---|"
   printf '%s' "$ROWS"
+  if [ -n "${EVAL_DETAILS:-}" ]; then
+    echo; echo "## Eval answers (latest run, real Gemini)"; echo
+    echo "| # | Question | Verdict | Bot reason |"; echo "|---|---|---|---|"
+    printf '%s\n' "$EVAL_DETAILS"
+  fi
 } > $OUT
 echo "PASS=$PASS FAIL=$FAIL -> $OUT"
 [ "$FAIL" = 0 ]

@@ -237,7 +237,8 @@ return { json: { answered, reason: answered ? 'answered' : reason, question,
   const w = new WF('support-bot-eval', { errorWorkflow: ERR_WF });
   w.add({ name: 'Run Eval', type: 'n8n-nodes-base.manualTrigger', typeVersion: 1, parameters: {} }, [0, 300]);
   w.add(code('Test Set', `return ${JSON.stringify(evalSet)}.map((t, i) => ({ json: { n: i + 1, ...t } }));`, 'runOnceForAllItems'), [260, 300]);
-  w.add(httpReq('Ask Bot', 'POST', `${BASE}/webhook/support`, { body: `={{ JSON.stringify({ question: $json.q }) }}`, timeout: 60000 }), [520, 300]);
+  // One question every 6 s keeps the eval under the Gemini free tier's per-minute limit.
+  w.add(httpReq('Ask Bot', 'POST', `${BASE}/webhook/support`, { body: `={{ JSON.stringify({ question: $json.q }) }}`, timeout: 60000, batch: { batchSize: 1, batchInterval: 6000 } }), [520, 300]);
   w.add(code('Score', `
 const tests = $('Test Set').all().map(i => i.json);
 const res = $input.all().map(i => i.json);

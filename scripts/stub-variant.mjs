@@ -1,6 +1,6 @@
 // Test helper: makes a throw-away copy of an AI workflow where the Gemini chain is replaced by a stub that
 // returns the JSON given in the request header "x-stub-llm". Everything AFTER the AI step is the real, unchanged
-// wiring, so the branches that depend on the AI answer (hot lead, answer vs. handoff) can be tested without a key.
+// wiring, so the branches that depend on the AI answer (hot lead, answer vs. handoff, AI outage) can be tested on demand.
 // Usage: node scripts/stub-variant.mjs create|delete <workflow-name> <chain-node-name>
 import fs from 'node:fs'; import { execFileSync } from 'node:child_process';
 const [cmd, name, chainNode] = process.argv.slice(2);
@@ -17,8 +17,9 @@ const ai = new Set(['Gemini Chat Model']); for (const n of w.nodes) if (n.type.i
 w.nodes = w.nodes.filter((n) => !ai.has(n.name));
 for (const k of ai) delete w.connections[k];
 const chain = w.nodes.find((n) => n.name === chainNode);
-chain.type = 'n8n-nodes-base.code'; chain.typeVersion = 2; delete chain.onError;
-chain.parameters = { mode: 'runOnceForEachItem', jsCode: `const h = $('${w.nodes.find((n) => n.type.endsWith('webhook')).name}').first().json.headers['x-stub-llm']; return { json: { output: JSON.parse(h) } };` };
+// Header value "error" makes the stub fail like an AI outage; the chain keeps onError, so the real fallback runs.
+chain.type = 'n8n-nodes-base.code'; chain.typeVersion = 2;
+chain.parameters = { mode: 'runOnceForEachItem', jsCode: `const h = $('${w.nodes.find((n) => n.type.endsWith('webhook')).name}').first().json.headers['x-stub-llm']; if (h === 'error') throw new Error('stubbed AI outage'); return { json: { output: JSON.parse(h) } };` };
 const wh = w.nodes.find((n) => n.type.endsWith('.webhook')); wh.parameters.path += '-stub'; wh.webhookId = wh.webhookId.replace(/.$/, 'f');
 const created = await api('POST', '/api/v1/workflows', w);
 await api('POST', `/api/v1/workflows/${created.id}/activate`, {});

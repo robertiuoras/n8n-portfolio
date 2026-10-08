@@ -39,6 +39,12 @@
         "jsonBody": "={{ JSON.stringify({ question: $json.q }) }}",
         "options": {
           "timeout": 60000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 6000
+            }
+          },
           "response": {
             "response": {
               "fullResponse": true,
