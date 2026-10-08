@@ -31,7 +31,7 @@ expect() { if [ "$2" = "true" ]; then record "$1" PASS "$3"; else record "$1" FA
 post() { # post <url> <json> [header...]  -> sets CODE and BODY, TIME
   local url=$1 body=$2; shift 2; local hargs=(); for h in "$@"; do hargs+=(-H "$h"); done
   local t0=$(date +%s)
-  local resp; resp=$(curl -s -m 120 -w '\n%{http_code}' -X POST "$url" -H "$H" "${hargs[@]}" -d "$body")
+  local resp; resp=$(curl -s -m 120 -w '\n%{http_code}' -X POST "$url" -H "$H" ${hargs[@]+"${hargs[@]}"} -d "$body")
   TIME=$(( $(date +%s) - t0 )); CODE=${resp##*$'\n'}; BODY=${resp%$'\n'*}
 }
 chat() { # chat <conv> <email> [approved] [header]
