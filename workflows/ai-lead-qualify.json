@@ -1,0 +1,567 @@
+{
+  "name": "ai-lead-qualify",
+  "nodes": [
+    {
+      "name": "Lead",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "ce6b0c8d-faf5-b302-a5c9-31c05af7d30e",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b704524e-e79a-ab7c-13fc-6cef351a0953",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst b = $json.body || {}; const errs = [];\nif (!b.name) errs.push('name is required');\nif (!b.email || !/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(String(b.email))) errs.push('email is missing or not valid');\nif (!b.message || String(b.message).length < 3) errs.push('message is required');\nreturn { json: { valid: errs.length === 0, errors: errs, body: b, xfail: String($json.headers['x-fail'] || '') } };"
+      },
+      "id": "0ced6c54-d1dd-f0e1-09df-98ccdaf4676d",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "236392a5-44d5-34b5-993b-5068f8f1d35d",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "fbea0504-48a8-d37c-f2ad-52a1d8dc476b",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'rejected', reasons: $('Validate').first().json.errors }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "a3eb9371-33fe-ff52-69ad-002297fa0dbc",
+      "position": [
+        780,
+        480
+      ]
+    },
+    {
+      "name": "Qualify Lead",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "promptType": "define",
+        "text": "=Lead name: {{ $json.body.name }}\nSource: {{ $json.body.source || 'unknown' }}\nMessage:\n{{ $json.body.message }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You qualify inbound sales leads for a small business. Read the message and return only the requested fields. intent: one short phrase. budget_mentioned: the budget as written, or null if none. urgency: low, medium or high, based only on what the person says. score: 0 to 100, how likely this is a real, ready-to-buy lead (100 = clear need, budget and timeline). summary: one sentence. needs_human: true if the message is unclear, abusive, off-topic, or you are not confident. Never invent facts."
+            }
+          ]
+        }
+      },
+      "id": "74d84e58-58a7-08d7-ed5a-5b974d74fef5",
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "name": "Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "credentials": {
+        "googlePalmApi": {
+          "id": "__GEMINI_CRED_ID__",
+          "name": "Gemini free tier"
+        }
+      },
+      "id": "7a7829a8-6aee-6cf3-a334-c0e1330aa3bd",
+      "position": [
+        780,
+        520
+      ]
+    },
+    {
+      "name": "Lead Fields",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n \"type\": \"object\",\n \"properties\": {\n  \"intent\": {\n   \"type\": \"string\"\n  },\n  \"budget_mentioned\": {\n   \"type\": [\n    \"string\",\n    \"null\"\n   ]\n  },\n  \"urgency\": {\n   \"type\": \"string\",\n   \"enum\": [\n    \"low\",\n    \"medium\",\n    \"high\"\n   ]\n  },\n  \"score\": {\n   \"type\": \"number\",\n   \"minimum\": 0,\n   \"maximum\": 100\n  },\n  \"summary\": {\n   \"type\": \"string\"\n  },\n  \"needs_human\": {\n   \"type\": \"boolean\"\n  }\n },\n \"required\": [\n  \"intent\",\n  \"budget_mentioned\",\n  \"urgency\",\n  \"score\",\n  \"summary\",\n  \"needs_human\"\n ]\n}"
+      },
+      "id": "9e1d4aa2-75e3-978c-d809-ac7f160965e0",
+      "position": [
+        980,
+        520
+      ]
+    },
+    {
+      "name": "Check AI Answer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst v = $('Validate').first().json; const lead = v.body;\nlet o = $json.output; let reason = '';\nconst okShape = o && typeof o === 'object' && ['low','medium','high'].includes(o.urgency) && typeof o.score === 'number' && o.score >= 0 && o.score <= 100 && typeof o.intent === 'string' && typeof o.summary === 'string' && typeof o.needs_human === 'boolean';\nif ($json.error) reason = 'ai_unavailable: ' + (typeof $json.error === 'string' ? $json.error : ($json.error.message || 'error'));\nelse if (!okShape) reason = 'ai_output_unusable';\nlet fallback = !!reason;\nif (fallback) o = { intent: 'unknown', budget_mentioned: null, urgency: 'medium', score: 0, summary: String(lead.message).slice(0, 200), needs_human: true };\nreturn { json: { fallback, reason, qualification: o, xfail: v.xfail,\n  payload: { email: lead.email.toLowerCase(), name: lead.name, phone: '', company: '', summary: o.summary, source: lead.source || '', qualification: o } } };"
+      },
+      "id": "3023377e-cf41-0aab-bf2f-2f218fbcecd5",
+      "position": [
+        1240,
+        300
+      ]
+    },
+    {
+      "name": "CRM Upsert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/mock-crm/contacts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-fail",
+              "value": "={{ $('Check AI Answer').first().json.xfail }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Check AI Answer').first().json.payload) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "51279781-2338-9852-46a3-5d4720f15df8",
+      "position": [
+        1500,
+        300
+      ]
+    },
+    {
+      "name": "Classify Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst attempt = $runIndex + 1;\nconst r = $json;\nconst status = (r.statusCode === undefined) ? null : r.statusCode;\nconst ok = status !== null && status >= 200 && status < 300;\nconst retryable = status === null || status === 429 || status >= 500;\nlet outcome = 'fail';\nif (ok) outcome = 'ok'; else if (retryable && attempt < 3) outcome = 'retry';\nconst err = r.error ? (typeof r.error === 'string' ? r.error : (r.error.message || JSON.stringify(r.error))) : ('HTTP ' + status + ' ' + JSON.stringify(r.body || '').slice(0, 200));\nreturn { json: { outcome, attempt, status, error: ok ? null : err, backoff: Math.pow(2, attempt - 1), crm: ok ? r.body : null, step: 'crm_upsert' } };"
+      },
+      "id": "529c0794-ad51-76c2-6ca5-e84babe5add4",
+      "position": [
+        1760,
+        300
+      ]
+    },
+    {
+      "name": "Outcome",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 3,
+        "output": "={{ [\"ok\",\"retry\",\"fail\"].indexOf($json.outcome) }}"
+      },
+      "id": "c01fec20-20ff-de4e-a2c9-7b639d8362bd",
+      "position": [
+        2020,
+        300
+      ]
+    },
+    {
+      "name": "Backoff Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "webhookId": "c20d665d-5852-a377-6bef-f30b17518583",
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $json.backoff }}",
+        "unit": "seconds"
+      },
+      "id": "9be642f8-0b62-4c51-06df-9c169d195857",
+      "position": [
+        1760,
+        520
+      ]
+    },
+    {
+      "name": "Hot Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9812cc51-6731-3335-807a-1b81f26d4e61",
+              "leftValue": "={{ $('Check AI Answer').first().json.qualification.score >= 70 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "df9cd0b0-72e7-c664-e5d2-12c6296601f2",
+      "position": [
+        2280,
+        220
+      ]
+    },
+    {
+      "name": "Notify Team",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "notifications"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "kind": "hot_lead",
+            "name": "={{ $('Validate').first().json.body.name }}",
+            "email": "={{ $('Validate').first().json.body.email }}",
+            "score": "={{ $('Check AI Answer').first().json.qualification.score }}",
+            "summary": "={{ $('Check AI Answer').first().json.qualification.summary }}",
+            "at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "1444bcb8-e58f-9394-241a-fd6ec6993cb2",
+      "position": [
+        2540,
+        140
+      ]
+    },
+    {
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'processed', qualification: $('Check AI Answer').first().json.qualification, used_fallback: $('Check AI Answer').first().json.fallback, fallback_reason: $('Check AI Answer').first().json.reason, crm_action: $('Classify Result').last().json.crm.action, crm_id: $('Classify Result').last().json.crm.id, hot_lead_notified: $('Check AI Answer').first().json.qualification.score >= 70 }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "2041543b-1c8a-9bd2-0de6-c2bec609b6c8",
+      "position": [
+        2800,
+        220
+      ]
+    },
+    {
+      "name": "Log Failure",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "crm_errors"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "key": "={{ 'lead:' + $('Validate').first().json.body.email.toLowerCase() }}",
+            "step": "={{ $json.step }}",
+            "http_status": "={{ $json.status ?? 0 }}",
+            "error": "={{ $json.error }}",
+            "payload": "={{ JSON.stringify($('Check AI Answer').first().json.payload) }}",
+            "at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "8a5c6e23-3a36-2dc4-9d7c-d37fbbaef991",
+      "position": [
+        2280,
+        460
+      ]
+    },
+    {
+      "name": "Respond 502",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'failed', reason: 'The lead was scored but the CRM could not be updated (' + $('Classify Result').last().json.error + '). Saved to the error log.' }) }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "147e19cc-ba4f-e28e-14a5-abcc68ed7d3c",
+      "position": [
+        2540,
+        460
+      ]
+    }
+  ],
+  "connections": {
+    "Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Qualify Lead",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Fields": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Qualify Lead",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Upsert": {
+      "main": [
+        [
+          {
+            "node": "Classify Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Result": {
+      "main": [
+        [
+          {
+            "node": "Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome": {
+      "main": [
+        [
+          {
+            "node": "Hot Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Backoff Wait",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backoff Wait": {
+      "main": [
+        [
+          {
+            "node": "CRM Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead": {
+      "main": [
+        [
+          {
+            "node": "Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Qualify Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qualify Lead": {
+      "main": [
+        [
+          {
+            "node": "Check AI Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check AI Answer": {
+      "main": [
+        [
+          {
+            "node": "CRM Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hot Lead?": {
+      "main": [
+        [
+          {
+            "node": "Notify Team",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Team": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Failure": {
+      "main": [
+        [
+          {
+            "node": "Respond 502",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__"
+  }
+}

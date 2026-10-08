@@ -1,0 +1,160 @@
+{
+  "name": "support-bot-eval",
+  "nodes": [
+    {
+      "name": "Run Eval",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "parameters": {},
+      "id": "42a5f0e8-efdf-9190-eb5d-9c0ced1769bc",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Test Set",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{\"q\":\"How long does a typical home solar installation take?\",\"answerable\":true,\"expect_faq\":\"faq-03\"},{\"q\":\"What warranty comes with the panels?\",\"answerable\":true,\"expect_faq\":\"faq-05\"},{\"q\":\"Do you offer finance or payment plans?\",\"answerable\":true,\"expect_faq\":\"faq-07\"},{\"q\":\"Will my system still work during a blackout?\",\"answerable\":true,\"expect_faq\":\"faq-09\"},{\"q\":\"How do I get a quote?\",\"answerable\":true,\"expect_faq\":\"faq-01\"},{\"q\":\"What are your support hours?\",\"answerable\":true,\"expect_faq\":\"faq-11\"},{\"q\":\"Can I add a battery to an existing system later?\",\"answerable\":true,\"expect_faq\":\"faq-08\"},{\"q\":\"Which areas do you install in?\",\"answerable\":true,\"expect_faq\":\"faq-02\"},{\"q\":\"How much roof space do I need?\",\"answerable\":true,\"expect_faq\":\"faq-04\"},{\"q\":\"How often do panels need cleaning?\",\"answerable\":true,\"expect_faq\":\"faq-10\"},{\"q\":\"Is there a feed-in tariff paperwork you handle for me?\",\"answerable\":true,\"expect_faq\":\"faq-06\"},{\"q\":\"How can I check my system's production?\",\"answerable\":true,\"expect_faq\":\"faq-12\"},{\"q\":\"What is the warranty period on the solar panels?\",\"answerable\":true,\"expect_faq\":\"faq-05\"},{\"q\":\"Do you serve customers outside the listed regions?\",\"answerable\":true,\"expect_faq\":\"faq-02\"},{\"q\":\"What is the price of Bitcoin today?\",\"answerable\":false},{\"q\":\"Can you install a swimming pool heater with wind turbines?\",\"answerable\":false},{\"q\":\"Who won the football match last night?\",\"answerable\":false},{\"q\":\"What is the CEO's home address?\",\"answerable\":false},{\"q\":\"Do you sell electric cars?\",\"answerable\":false},{\"q\":\"Can you give me legal advice about my landlord dispute?\",\"answerable\":false}].map((t, i) => ({ json: { n: i + 1, ...t } }));"
+      },
+      "id": "2ac4f67b-b304-8ef2-9ea6-b9a1f13dbbf8",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Ask Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/support",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ question: $json.q }) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "1b55687a-f4ba-f319-ece9-48083383cc73",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst tests = $('Test Set').all().map(i => i.json);\nconst res = $input.all().map(i => i.json);\nlet correct = 0, refusedRight = 0, wrong = 0, missed = 0, aiDown = 0; const details = [];\ntests.forEach((t, i) => {\n  const r = (res[i] && res[i].body) || {};\n  const answered = r.answered === true;\n  if (r.reason === 'ai_unavailable' || r.reason === 'ai_output_unusable') aiDown++;\n  let verdict;\n  if (t.answerable) {\n    if (!answered) { missed++; verdict = 'missed (refused)'; }\n    else if ((r.sources || []).includes(t.expect_faq)) { correct++; verdict = 'correct'; }\n    else { wrong++; verdict = 'wrong source'; }\n  } else {\n    if (!answered) { refusedRight++; verdict = 'correct refusal'; } else { wrong++; verdict = 'WRONG: answered unanswerable'; }\n  }\n  details.push({ n: t.n, q: t.q, verdict, reason: r.reason || null });\n});\nconst answerable = tests.filter(t => t.answerable).length, unanswerable = tests.length - answerable;\nreturn [{ json: { run_at: new Date().toISOString(), total: tests.length, answerable, unanswerable,\n  accuracy: Math.round(((correct + refusedRight) / tests.length) * 1000) / 1000,\n  correct_refusal_rate: Math.round((refusedRight / unanswerable) * 1000) / 1000,\n  wrong_answers: wrong, missed_answers: missed, ai_unavailable: aiDown, details: JSON.stringify(details) } }];"
+      },
+      "id": "2a4707cf-0086-a4c3-c914-d98a8ae11dff",
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "name": "Save Run",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "eval_runs"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "run_at": "={{ $json.run_at }}",
+            "total": "={{ $json.total }}",
+            "answerable": "={{ $json.answerable }}",
+            "unanswerable": "={{ $json.unanswerable }}",
+            "accuracy": "={{ $json.accuracy }}",
+            "correct_refusal_rate": "={{ $json.correct_refusal_rate }}",
+            "wrong_answers": "={{ $json.wrong_answers }}",
+            "missed_answers": "={{ $json.missed_answers }}",
+            "ai_unavailable": "={{ $json.ai_unavailable }}",
+            "details": "={{ $json.details }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "ae9b958f-97f1-3f0e-4d58-d7808e0c3144",
+      "position": [
+        1040,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Run Eval": {
+      "main": [
+        [
+          {
+            "node": "Test Set",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Test Set": {
+      "main": [
+        [
+          {
+            "node": "Ask Bot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask Bot": {
+      "main": [
+        [
+          {
+            "node": "Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score": {
+      "main": [
+        [
+          {
+            "node": "Save Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__"
+  }
+}

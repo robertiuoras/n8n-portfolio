@@ -1,0 +1,725 @@
+{
+  "name": "mock-crm",
+  "nodes": [
+    {
+      "name": "POST Contact",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "6eba7dc3-6be8-a7a9-f3d5-1c3d16c826b1",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "mock-crm/contacts",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "9928c2fc-a6a4-d5e3-e4b0-3816a375e62f",
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Fail History",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "mock_crm_log"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "email",
+              "condition": "eq",
+              "keyValue": "={{ $json.body.email }}"
+            },
+            {
+              "keyName": "outcome",
+              "condition": "eq",
+              "keyValue": "injected_500x2"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "5218cb65-a237-2b3e-534c-6ad2098ca0bb",
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "name": "Decide",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst req = $('POST Contact').first().json;\nconst b = req.body || {};\nconst fail = String(req.headers['x-fail'] || '').toLowerCase();\nconst prior = $input.all().filter(i => i.json.id !== undefined && i.json.id !== null).length;\nlet mode = 'ok', message = '';\nif (!b.email || typeof b.email !== 'string') { mode = 'bad_request'; message = 'email is required'; }\nelse if (fail === '500') mode = '500';\nelse if (fail === '429') mode = '429';\nelse if (fail === '400') mode = '400';\nelse if (fail === 'timeout') mode = 'timeout';\nelse if (fail === '500x2') mode = prior < 2 ? '500x2_fail' : 'ok';\nreturn [{ json: { mode, message, prior_500x2_failures: prior, x_fail: fail, email: (b.email || '').toLowerCase(), contact: b } }];"
+      },
+      "id": "9fd517cd-a537-710c-1e24-b790ba419d0f",
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "name": "Log Call",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "mock_crm_log"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "email": "={{ $json.email }}",
+            "method": "POST",
+            "x_fail": "={{ $json.x_fail }}",
+            "outcome": "={{ $json.mode === '500x2_fail' ? 'injected_500x2' : ($json.mode === 'ok' ? 'ok' : 'injected_' + $json.mode) }}",
+            "at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "69f51449-0ab4-5b64-d20b-271beae03789",
+      "position": [
+        780,
+        0
+      ]
+    },
+    {
+      "name": "Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 7,
+        "output": "={{ [\"ok\",\"500\",\"429\",\"400\",\"timeout\",\"500x2_fail\",\"bad_request\"].indexOf($('Decide').first().json.mode) }}"
+      },
+      "id": "346ebd1a-d028-a1bb-0789-d6b7e22e7066",
+      "position": [
+        1040,
+        0
+      ]
+    },
+    {
+      "name": "Respond 500",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'injected server error (x-fail)' }) }}",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "id": "24286862-4f4c-466a-7426-23bfb75c3d30",
+      "position": [
+        1300,
+        120
+      ]
+    },
+    {
+      "name": "Respond 429",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'injected rate limit (x-fail)' }) }}",
+        "options": {
+          "responseCode": 429
+        }
+      },
+      "id": "5d94dc9f-80c7-4a3a-632a-e6d962bfa772",
+      "position": [
+        1300,
+        240
+      ]
+    },
+    {
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'injected bad request (x-fail)' }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "63afbbae-c227-e5e8-daff-951cbd411821",
+      "position": [
+        1300,
+        360
+      ]
+    },
+    {
+      "name": "Stall 15s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "webhookId": "ba0f7ce5-a5f0-acab-2529-fb49e2d00dcc",
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 15,
+        "unit": "seconds"
+      },
+      "id": "5df88f7e-986a-9824-cebb-024a2c19d869",
+      "position": [
+        1300,
+        480
+      ]
+    },
+    {
+      "name": "Respond Late",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ late: true, note: 'answered after the caller gave up' }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "47640a6d-591e-1364-4340-b7af1631758b",
+      "position": [
+        1560,
+        480
+      ]
+    },
+    {
+      "name": "Respond Bad Input",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: $('Decide').first().json.message }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "285a63e9-2d57-251d-735c-1c0253f51215",
+      "position": [
+        1300,
+        720
+      ]
+    },
+    {
+      "name": "Find Contact",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "mock_crm_contacts"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "email",
+              "condition": "eq",
+              "keyValue": "={{ $('Decide').first().json.email }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "1bb14f88-b3eb-e31d-bd4b-07e820ad575f",
+      "position": [
+        1300,
+        -120
+      ]
+    },
+    {
+      "name": "Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bfef842a-a95c-f133-58bd-048e35574f0f",
+              "leftValue": "={{ $json.id !== undefined && $json.id !== null }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9a688a1e-8e4c-44f2-5bcb-c682f73583a6",
+      "position": [
+        1560,
+        -120
+      ]
+    },
+    {
+      "name": "Update Contact",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "mock_crm_contacts"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "email",
+              "condition": "eq",
+              "keyValue": "={{ $('Decide').first().json.email }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "name": "={{ $('Decide').first().json.contact.name ?? '' }}",
+            "phone": "={{ $('Decide').first().json.contact.phone ?? '' }}",
+            "company": "={{ $('Decide').first().json.contact.company ?? '' }}",
+            "summary": "={{ $('Decide').first().json.contact.summary ?? '' }}",
+            "extra": "={{ JSON.stringify($('Decide').first().json.contact) }}",
+            "updated_at": "={{ $now.toISO() }}",
+            "version": "={{ ($('Find Contact').first().json.version || 1) + 1 }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "e01fc921-67af-be59-e4e1-f33879537069",
+      "position": [
+        1820,
+        -240
+      ]
+    },
+    {
+      "name": "Create Contact",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "mock_crm_contacts"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "email": "={{ $('Decide').first().json.email }}",
+            "name": "={{ $('Decide').first().json.contact.name ?? '' }}",
+            "phone": "={{ $('Decide').first().json.contact.phone ?? '' }}",
+            "company": "={{ $('Decide').first().json.contact.company ?? '' }}",
+            "summary": "={{ $('Decide').first().json.contact.summary ?? '' }}",
+            "extra": "={{ JSON.stringify($('Decide').first().json.contact) }}",
+            "created_at": "={{ $now.toISO() }}",
+            "updated_at": "={{ $now.toISO() }}",
+            "version": 1
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "8903b59b-2454-75fb-eddf-f5a5ec0300ba",
+      "position": [
+        1820,
+        0
+      ]
+    },
+    {
+      "name": "Respond Updated",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ id: $('Find Contact').first().json.id, action: 'updated', version: ($('Find Contact').first().json.version || 1) + 1 }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "f8f5a95c-0763-8b60-e25d-2e6000dc9d9a",
+      "position": [
+        2080,
+        -240
+      ]
+    },
+    {
+      "name": "Respond Created",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ id: $('Create Contact').first().json.id, action: 'created', version: 1 }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "c643ed27-431d-9dd2-525f-bf8747d09c59",
+      "position": [
+        2080,
+        0
+      ]
+    },
+    {
+      "name": "GET Contact",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "52c7fc7b-9207-0620-198f-428778464303",
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "mock-crm/contacts",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e58245c4-1ce3-244b-85e8-9915fc656976",
+      "position": [
+        0,
+        960
+      ]
+    },
+    {
+      "name": "Lookup",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "mock_crm_contacts"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "email",
+              "condition": "eq",
+              "keyValue": "={{ String($json.query.email || '').toLowerCase() }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "bf2d5f79-cbbe-8595-fb18-9806e3a7bbd7",
+      "position": [
+        260,
+        960
+      ]
+    },
+    {
+      "name": "Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "03758918-d5c5-bc3e-de70-5de7ba77a7b6",
+              "leftValue": "={{ $json.id !== undefined && $json.id !== null }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9e23e84b-50aa-d728-ff25-cfdddfd185e9",
+      "position": [
+        520,
+        960
+      ]
+    },
+    {
+      "name": "Respond Found",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ found: true, contact: { id: $json.id, email: $json.email, name: $json.name, company: $json.company, version: $json.version } }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "3c29da19-325f-7c13-e730-d96885516320",
+      "position": [
+        780,
+        900
+      ]
+    },
+    {
+      "name": "Respond Not Found",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ found: false }) }}",
+        "options": {
+          "responseCode": 404
+        }
+      },
+      "id": "db6f1ed8-7ccb-e55a-7fe9-dc4495ca9446",
+      "position": [
+        780,
+        1040
+      ]
+    }
+  ],
+  "connections": {
+    "POST Contact": {
+      "main": [
+        [
+          {
+            "node": "Fail History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fail History": {
+      "main": [
+        [
+          {
+            "node": "Decide",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide": {
+      "main": [
+        [
+          {
+            "node": "Log Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Call": {
+      "main": [
+        [
+          {
+            "node": "Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route": {
+      "main": [
+        [
+          {
+            "node": "Find Contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 500",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 429",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stall 15s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 500",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Bad Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stall 15s": {
+      "main": [
+        [
+          {
+            "node": "Respond Late",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Contact": {
+      "main": [
+        [
+          {
+            "node": "Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exists?": {
+      "main": [
+        [
+          {
+            "node": "Update Contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Contact": {
+      "main": [
+        [
+          {
+            "node": "Respond Updated",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Contact": {
+      "main": [
+        [
+          {
+            "node": "Respond Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET Contact": {
+      "main": [
+        [
+          {
+            "node": "Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup": {
+      "main": [
+        [
+          {
+            "node": "Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Found?": {
+      "main": [
+        [
+          {
+            "node": "Respond Found",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Not Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

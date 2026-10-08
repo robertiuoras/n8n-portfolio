@@ -1,0 +1,53 @@
+{
+  "name": "error-demo",
+  "nodes": [
+    {
+      "name": "Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "6e936e03-f6f7-eb1f-f2db-2878e0a67367",
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "error-demo",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "a45eff4d-f877-1027-ba6b-465d01624837",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Always Fails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "throw new Error('Deliberate demo failure: this is how an unexpected crash is caught and logged');"
+      },
+      "id": "922b1c6a-8740-6618-0bbf-6ad88682d003",
+      "position": [
+        520,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Trigger": {
+      "main": [
+        [
+          {
+            "node": "Always Fails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__"
+  }
+}

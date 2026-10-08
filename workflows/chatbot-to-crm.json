@@ -1,0 +1,674 @@
+{
+  "name": "chatbot-to-crm",
+  "nodes": [
+    {
+      "name": "Chatbot Summary",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "ab31fa14-8781-9c3d-c85c-e8a511e7f5c7",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chatbot-summary",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "3ae79837-cc48-2785-bffd-74a84d8d06ce",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst b = $json.body || {};\nconst errs = [];\nif (!b.conversation_id || typeof b.conversation_id !== 'string') errs.push('conversation_id is required');\nif (typeof b.approved !== 'boolean') errs.push('approved must be true or false');\nconst c = b.customer || {};\nif (!c.email || !/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(String(c.email))) errs.push('customer.email is missing or not a valid email');\nif (!c.name) errs.push('customer.name is required');\nif (!b.summary) errs.push('summary is required');\nif (!b.request_type) errs.push('request_type is required');\nreturn { json: { valid: errs.length === 0, errors: errs, approved: b.approved === true, body: b, xfail: String($json.headers['x-fail'] || '') } };"
+      },
+      "id": "3808cc80-499e-fd22-ca20-2189e20fa5c0",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "236392a5-44d5-34b5-993b-5068f8f1d35d",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6b415ada-c603-b082-03a3-ccdcbb570446",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'rejected', reasons: $('Validate').first().json.errors }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "8099aac5-7b97-1f1b-54a4-85d5b815ca72",
+      "position": [
+        780,
+        460
+      ]
+    },
+    {
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "42d5dfbb-6897-35d9-7381-95828decfd3d",
+              "leftValue": "={{ $json.approved }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f3496df8-5575-3507-a9cd-5830f9cac14f",
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "name": "Respond Ignored",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'ignored', reason: 'summary not approved, nothing sent to the CRM' }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "d081d246-a85f-1e63-4333-2e5a5474f603",
+      "position": [
+        1040,
+        460
+      ]
+    },
+    {
+      "name": "Make Key",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "parameters": {
+        "action": "hash",
+        "type": "SHA256",
+        "value": "={{ $json.body.conversation_id + $json.body.customer.email.toLowerCase() }}",
+        "dataPropertyName": "key",
+        "encoding": "hex"
+      },
+      "id": "8ddda8be-ef9c-f06e-e0b5-a8a7112c9095",
+      "position": [
+        1040,
+        300
+      ]
+    },
+    {
+      "name": "Already Sent?",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "crm_sent"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "key",
+              "condition": "eq",
+              "keyValue": "={{ $json.key }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "daec3f0c-bbb1-dcb3-173c-552f9fc29e44",
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "name": "Is Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f950e591-2707-8e74-956f-e6090ab97c3b",
+              "leftValue": "={{ $json.id !== undefined && $json.id !== null }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5d592db9-e42f-8e31-dc4e-8315dd91553b",
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "name": "Respond Duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'duplicate', key: $('Make Key').first().json.key }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "4dc02fae-50fa-f691-1def-753efb389844",
+      "position": [
+        1820,
+        160
+      ]
+    },
+    {
+      "name": "CRM Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "http://localhost:5678/webhook/mock-crm/contacts",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "email",
+              "value": "={{ $('Make Key').first().json.body.customer.email.toLowerCase() }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "a92e273b-65ea-bfd3-f748-e88c52e991b9",
+      "position": [
+        1820,
+        400
+      ]
+    },
+    {
+      "name": "Prepare",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst v = $('Validate').first().json; const b = v.body; const c = b.customer;\nconst exists = $json.statusCode === 200 && $json.body && $json.body.found === true;\nreturn { json: { exists, lookup_status: $json.statusCode ?? null, key: $('Make Key').first().json.key, xfail: v.xfail,\n  payload: { email: c.email.toLowerCase(), name: c.name, phone: c.phone || '', company: c.company || '', summary: b.summary, request_type: b.request_type, conversation_id: b.conversation_id } } };"
+      },
+      "id": "fb5b8cb1-6d0c-43f7-c569-77c3d5d60c0d",
+      "position": [
+        2080,
+        400
+      ]
+    },
+    {
+      "name": "CRM Upsert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/mock-crm/contacts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-fail",
+              "value": "={{ $('Prepare').first().json.xfail }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Prepare').first().json.payload) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "f438f4a3-3d7e-0d94-85f4-a8a4b7acef9a",
+      "position": [
+        2340,
+        400
+      ]
+    },
+    {
+      "name": "Classify Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst attempt = $runIndex + 1;\nconst r = $json;\nconst status = (r.statusCode === undefined) ? null : r.statusCode;\nconst ok = status !== null && status >= 200 && status < 300;\nconst retryable = status === null || status === 429 || status >= 500;\nlet outcome = 'fail';\nif (ok) outcome = 'ok'; else if (retryable && attempt < 3) outcome = 'retry';\nconst err = r.error ? (typeof r.error === 'string' ? r.error : (r.error.message || JSON.stringify(r.error))) : ('HTTP ' + status + ' ' + JSON.stringify(r.body || '').slice(0, 200));\nreturn { json: { outcome, attempt, status, error: ok ? null : err, backoff: Math.pow(2, attempt - 1), crm: ok ? r.body : null, step: 'crm_upsert' } };"
+      },
+      "id": "f0573125-b1a8-0e0d-6edc-4f160388ccbf",
+      "position": [
+        2600,
+        400
+      ]
+    },
+    {
+      "name": "Outcome",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 3,
+        "output": "={{ [\"ok\",\"retry\",\"fail\"].indexOf($json.outcome) }}"
+      },
+      "id": "86a65918-45fa-5ba0-d4fa-d9d78e643875",
+      "position": [
+        2860,
+        400
+      ]
+    },
+    {
+      "name": "Backoff Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "webhookId": "c20d665d-5852-a377-6bef-f30b17518583",
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $json.backoff }}",
+        "unit": "seconds"
+      },
+      "id": "989f7b5d-b0a4-2bb5-32b1-8cef68af8d22",
+      "position": [
+        2600,
+        620
+      ]
+    },
+    {
+      "name": "Remember Sent",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "crm_sent"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "key": "={{ $('Prepare').first().json.key }}",
+            "conversation_id": "={{ $('Validate').first().json.body.conversation_id }}",
+            "crm_action": "={{ $('Classify Result').first().json.crm?.action ?? '' }}",
+            "crm_id": "={{ $('Classify Result').first().json.crm?.id ?? 0 }}",
+            "at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "045b7137-d2d4-12f1-1baf-0545306c33fc",
+      "position": [
+        3120,
+        300
+      ]
+    },
+    {
+      "name": "Respond Synced",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'synced', crm_action: $('Classify Result').first().json.crm.action, crm_id: $('Classify Result').first().json.crm.id, attempts: $('Classify Result').last().json.attempt, existed_before: $('Prepare').first().json.exists }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "8ad94656-03f5-82e6-689b-819ae19064b5",
+      "position": [
+        3380,
+        300
+      ]
+    },
+    {
+      "name": "Log Failure",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "crm_errors"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "key": "={{ $('Prepare').first().json.key }}",
+            "step": "={{ $json.step }}",
+            "http_status": "={{ $json.status ?? 0 }}",
+            "error": "={{ $json.error }}",
+            "payload": "={{ JSON.stringify($('Prepare').first().json.payload) }}",
+            "at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "747f1233-8b28-19d6-7a15-459243a988f4",
+      "position": [
+        3120,
+        520
+      ]
+    },
+    {
+      "name": "Respond 502",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'failed', reason: 'The CRM could not be updated (' + $('Classify Result').last().json.error + '). The summary was saved to the error log for follow-up.', attempts: $('Classify Result').last().json.attempt }) }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "7204a230-e773-8738-7ad6-2f19276e03a9",
+      "position": [
+        3380,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "CRM Upsert": {
+      "main": [
+        [
+          {
+            "node": "Classify Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Result": {
+      "main": [
+        [
+          {
+            "node": "Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome": {
+      "main": [
+        [
+          {
+            "node": "Remember Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Backoff Wait",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backoff Wait": {
+      "main": [
+        [
+          {
+            "node": "CRM Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chatbot Summary": {
+      "main": [
+        [
+          {
+            "node": "Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Make Key",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Ignored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Make Key": {
+      "main": [
+        [
+          {
+            "node": "Already Sent?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Sent?": {
+      "main": [
+        [
+          {
+            "node": "Is Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Respond Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CRM Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Lookup": {
+      "main": [
+        [
+          {
+            "node": "Prepare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare": {
+      "main": [
+        [
+          {
+            "node": "CRM Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remember Sent": {
+      "main": [
+        [
+          {
+            "node": "Respond Synced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Failure": {
+      "main": [
+        [
+          {
+            "node": "Respond 502",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__"
+  }
+}

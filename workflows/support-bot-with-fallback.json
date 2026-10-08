@@ -1,0 +1,380 @@
+{
+  "name": "support-bot-with-fallback",
+  "nodes": [
+    {
+      "name": "Support Question",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "4eaff951-a279-41ef-a852-9c4bf08cde3f",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "support",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "62cb90e9-f3a3-0d63-6e72-99849be5528a",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst q = ($json.body || {}).question;\nconst errs = [];\nif (!q || typeof q !== 'string' || q.trim().length < 3) errs.push('question is required');\nelse if (q.length > 500) errs.push('question must be 500 characters or fewer');\nreturn { json: { valid: errs.length === 0, errors: errs, question: typeof q === 'string' ? q.trim() : '' } };"
+      },
+      "id": "37ff52d6-8735-1470-f2e6-17780f88d0b6",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "236392a5-44d5-34b5-993b-5068f8f1d35d",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1cc3f309-a7b9-bca2-9df6-431da1325bd4",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answered: false, reasons: $('Validate').first().json.errors }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "8c787e65-78ff-01bd-80b1-b7ff08245976",
+      "position": [
+        780,
+        480
+      ]
+    },
+    {
+      "name": "Answer From FAQ",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "promptType": "define",
+        "text": "=Customer question: {{ $json.question }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the support assistant for Acme Solar, a fictional home-solar installer. Answer ONLY using the FAQ below. If the FAQ does not clearly contain the answer, set supported=false, confidence low, and leave source_faq_ids empty. Never use outside knowledge. When supported, answer in one or two plain sentences and list the FAQ ids you used. confidence is 0 to 1.\n\nFAQ:\n[faq-01] Q: How do I get a quote?\nA: Fill in the quote form on our website or call us. We reply within one business day and book a free roof assessment.\n[faq-02] Q: Which areas do you install in?\nA: We install across Queensland and northern New South Wales. We do not currently install elsewhere.\n[faq-03] Q: How long does an installation take?\nA: A typical home system is installed in one to two days after approvals are in place.\n[faq-04] Q: How much roof space do I need?\nA: Roughly 1.8 square metres per panel. A 6.6 kW system of 15 panels needs about 27 square metres of usable roof.\n[faq-05] Q: What warranty do I get?\nA: Panels carry a 25-year performance warranty, inverters 10 years, and our workmanship is covered for 5 years.\n[faq-06] Q: Do you handle the paperwork for the feed-in tariff and grid connection?\nA: Yes. We lodge the grid connection application and the feed-in tariff paperwork on your behalf at no extra cost.\n[faq-07] Q: Do you offer finance?\nA: Yes. We offer 0 percent interest payment plans for up to 24 months through a partner lender, subject to approval.\n[faq-08] Q: Can I add a battery later?\nA: Yes, if your inverter is battery-ready. We check this during the assessment and can retrofit a battery at any time.\n[faq-09] Q: Does my system work during a blackout?\nA: Standard systems switch off during a blackout for safety. Only systems with a battery and backup gateway can supply power during an outage.\n[faq-10] Q: How often should I clean the panels?\nA: Rain usually keeps them clean. We suggest a gentle rinse once or twice a year if you are in a dusty area.\n[faq-11] Q: What are your support hours?\nA: Our support team is available 8am to 5pm AEST, Monday to Friday. Emergencies are answered by phone 24/7.\n[faq-12] Q: How can I monitor my system's production?\nA: Every system includes the Acme Solar app, which shows live and historical production and savings."
+            }
+          ]
+        }
+      },
+      "id": "73b98e2d-1b5c-68a3-8ebd-6bd2dc3e34db",
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "name": "Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "credentials": {
+        "googlePalmApi": {
+          "id": "__GEMINI_CRED_ID__",
+          "name": "Gemini free tier"
+        }
+      },
+      "id": "e100f17a-9320-27cd-7f47-81576bfd867b",
+      "position": [
+        780,
+        520
+      ]
+    },
+    {
+      "name": "Answer Fields",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n \"type\": \"object\",\n \"properties\": {\n  \"answer\": {\n   \"type\": \"string\"\n  },\n  \"supported\": {\n   \"type\": \"boolean\"\n  },\n  \"confidence\": {\n   \"type\": \"number\",\n   \"minimum\": 0,\n   \"maximum\": 1\n  },\n  \"source_faq_ids\": {\n   \"type\": \"array\",\n   \"items\": {\n    \"type\": \"string\"\n   }\n  }\n },\n \"required\": [\n  \"answer\",\n  \"supported\",\n  \"confidence\",\n  \"source_faq_ids\"\n ]\n}"
+      },
+      "id": "5918b561-1479-2f88-d444-d2cb8ee0cc0e",
+      "position": [
+        980,
+        520
+      ]
+    },
+    {
+      "name": "Decide",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst ids = [\"faq-01\",\"faq-02\",\"faq-03\",\"faq-04\",\"faq-05\",\"faq-06\",\"faq-07\",\"faq-08\",\"faq-09\",\"faq-10\",\"faq-11\",\"faq-12\"];\nconst question = $('Validate').first().json.question;\nconst o = $json.output; let reason = '';\nconst shape = o && typeof o === 'object' && typeof o.answer === 'string' && typeof o.supported === 'boolean' && typeof o.confidence === 'number' && Array.isArray(o.source_faq_ids);\nif ($json.error) reason = 'ai_unavailable';\nelse if (!shape) reason = 'ai_output_unusable';\nelse if (!o.supported) reason = 'not_in_faq';\nelse if (o.confidence < 0.6) reason = 'low_confidence';\nelse if (o.source_faq_ids.length === 0 || !o.source_faq_ids.every(i => ids.includes(i))) reason = 'no_valid_source';\nconst answered = reason === '';\nreturn { json: { answered, reason: answered ? 'answered' : reason, question,\n  answer: answered ? o.answer : \"I can't answer that reliably. I've passed your question to our team and they will reply by email.\",\n  confidence: shape ? o.confidence : 0, sources: answered ? o.source_faq_ids : [] } };"
+      },
+      "id": "1c42989f-38a2-3ea3-bf5b-adbcf6a79e46",
+      "position": [
+        1240,
+        300
+      ]
+    },
+    {
+      "name": "Answered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "36603a93-4a41-d689-27ae-b6eca29ec314",
+              "leftValue": "={{ $json.answered }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "19738212-b800-8946-91db-9f7b65bf3914",
+      "position": [
+        1500,
+        300
+      ]
+    },
+    {
+      "name": "Respond Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answered: true, answer: $json.answer, sources: $json.sources, confidence: $json.confidence }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "8b20e03c-d636-ff62-8180-d86312b4fe26",
+      "position": [
+        1760,
+        220
+      ]
+    },
+    {
+      "name": "Create Handoff",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "handoffs"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "question": "={{ $json.question }}",
+            "reason": "={{ $json.reason }}",
+            "confidence": "={{ $json.confidence }}",
+            "at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "83573402-1f66-5d5c-c7cb-71b0f824109e",
+      "position": [
+        1760,
+        420
+      ]
+    },
+    {
+      "name": "Respond Handoff",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answered: false, handoff: true, reason: $('Decide').first().json.reason, message: $('Decide').first().json.answer }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "2dbf1f8b-fb31-4589-4c8b-752b4bda7eeb",
+      "position": [
+        2020,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Answer From FAQ",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer Fields": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Answer From FAQ",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Support Question": {
+      "main": [
+        [
+          {
+            "node": "Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Answer From FAQ",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer From FAQ": {
+      "main": [
+        [
+          {
+            "node": "Decide",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide": {
+      "main": [
+        [
+          {
+            "node": "Answered?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answered?": {
+      "main": [
+        [
+          {
+            "node": "Respond Answer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Handoff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Handoff": {
+      "main": [
+        [
+          {
+            "node": "Respond Handoff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__"
+  }
+}
