@@ -23,6 +23,7 @@ for (const name of process.argv.slice(2).length ? process.argv.slice(2) : Object
   await page.mouse.click(800, 950); // focus the canvas background
   await page.keyboard.press('1');   // "zoom to fit"
   await page.waitForTimeout(1500);
+  await page.evaluate(() => { for (const b of document.querySelectorAll('button')) if (/Execute workflow/.test(b.textContent)) { let e = b; while (e.parentElement && e.parentElement.children.length === 1) e = e.parentElement; (e.parentElement && e.parentElement.children.length > 1 ? b.closest('div') : e).style.display = 'none'; } });
   const box = await page.evaluate(() => {
     const r = [...document.querySelectorAll('.vue-flow__node')].map((n) => n.getBoundingClientRect());
     return { x1: Math.min(...r.map((b) => b.left)), y1: Math.min(...r.map((b) => b.top)), x2: Math.max(...r.map((b) => b.right)), y2: Math.max(...r.map((b) => b.bottom)) };

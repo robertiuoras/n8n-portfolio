@@ -16,8 +16,8 @@ TIDS=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables?limit=250" | j
 tid() { awk -v n="$1" '$1==n{print $2}' <<<"$TIDS"; }
 
 # rows <table> <column> <value>  -> JSON array of matching rows
-rows() { curl -s -G -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid "$1")/rows" \
-  --data-urlencode "filter={\"type\":\"and\",\"filters\":[{\"columnName\":\"$2\",\"condition\":\"eq\",\"value\":\"$3\"}]}" | jq -c '.data'; }
+rows() { local f; f=$(jq -rn --arg c "$2" --arg v "$3" '{type:"and",filters:[{columnName:$c,condition:"eq",value:$v}]}|tojson|@uri')
+  curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid "$1")/rows?filter=$f" | jq -c '.data'; }
 count() { rows "$@" | jq 'length'; }
 # record <name> <PASS|FAIL> <evidence>
 record() {
@@ -150,7 +150,8 @@ expect "error-handler: an unexpected crash in another workflow is logged" "$([ "
 echo "== support eval (20 questions)"
 EVAL_ID=$(jq -r '.["support-bot-eval"]' data/ids.json)
 before=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid eval_runs)/rows" | jq '.data|length')
-n8n execute --id "$EVAL_ID" >/dev/null 2>&1
+node scripts/run-manual.mjs support-bot-eval "Run Eval" >/dev/null 2>&1
+for i in $(seq 1 40); do c=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid eval_runs)/rows" | jq '.data|length'); [ "$c" -gt "$before" ] && break; sleep 2; done
 after=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid eval_runs)/rows" | jq '.data|length')
 last=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid eval_runs)/rows" | jq -c '.data|last|del(.details)')
 expect "eval: runs the 20-question set against the bot and writes a row to eval_runs" "$([ "$after" -eq $((before+1)) ] && [ "$(jq -r .total <<<"$last")" = 20 ] && echo true)" "eval_runs rows $before -> $after; $last; AI key present: $([ -n "$GEM" ] && echo yes || echo NO, so every question fell back to a handoff)"

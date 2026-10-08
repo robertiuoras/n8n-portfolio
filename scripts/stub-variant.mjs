@@ -22,4 +22,5 @@ chain.parameters = { mode: 'runOnceForEachItem', jsCode: `const h = $('${w.nodes
 const wh = w.nodes.find((n) => n.type.endsWith('.webhook')); wh.parameters.path += '-stub'; wh.webhookId = wh.webhookId.replace(/.$/, 'f');
 const created = await api('POST', '/api/v1/workflows', w);
 await api('POST', `/api/v1/workflows/${created.id}/activate`, {});
+await new Promise((r) => setTimeout(r, 3000)); // let the webhook register
 console.log(created.id);

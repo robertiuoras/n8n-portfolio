@@ -55,11 +55,11 @@ return [{ json: { mode, message, prior_500x2_failures: prior, x_fail: fail, emai
     outcome: `={{ $json.mode === '500x2_fail' ? 'injected_500x2' : ($json.mode === 'ok' ? 'ok' : 'injected_' + $json.mode) }}`, at: NOW }), [780, 0]);
   const modes = ['ok', '500', '429', '400', 'timeout', '500x2_fail', 'bad_request'];
   w.add(sw('Route', modes, `$('Decide').first().json.mode`), [1040, 0]);
-  w.add(respond('Respond 500', J(`{ error: 'injected server error (x-fail)' }`), 500), [1300, 120]);
-  w.add(respond('Respond 429', J(`{ error: 'injected rate limit (x-fail)' }`), 429), [1300, 240]);
-  w.add(respond('Respond 400', J(`{ error: 'injected bad request (x-fail)' }`), 400), [1300, 360]);
-  w.add(wait('Stall 15s', 15), [1300, 480]);
-  w.add(respond('Respond Late', J(`{ late: true, note: 'answered after the caller gave up' }`), 200), [1560, 480]);
+  w.add(respond('Respond 500', J(`{ error: 'injected server error (x-fail)' }`), 500), [1300, 100]);
+  w.add(respond('Respond 429', J(`{ error: 'injected rate limit (x-fail)' }`), 429), [1300, 260]);
+  w.add(respond('Respond 400', J(`{ error: 'injected bad request (x-fail)' }`), 400), [1300, 420]);
+  w.add(wait('Stall 15s', 15), [1300, 580]);
+  w.add(respond('Respond Late', J(`{ late: true, note: 'answered after the caller gave up' }`), 200), [1560, 580]);
   w.add(respond('Respond Bad Input', J(`{ error: $('Decide').first().json.message }`), 400), [1300, 720]);
   w.add(dtGet('Find Contact', 'mock_crm_contacts', { email: `={{ $('Decide').first().json.email }}` }), [1300, -120]);
   w.add(iff('Exists?', `={{ $json.id !== undefined && $json.id !== null }}`), [1560, -120]);
@@ -148,15 +148,15 @@ if (!b.email || !/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(String(b.email))) errs.pu
 if (!b.message || String(b.message).length < 3) errs.push('message is required');
 return { json: { valid: errs.length === 0, errors: errs, body: b, xfail: String($json.headers['x-fail'] || '') } };`), [260, 300]);
   w.add(iff('Valid?', '={{ $json.valid }}'), [520, 300]);
-  w.add(respond('Respond 400', J(`{ status: 'rejected', reasons: $('Validate').first().json.errors }`), 400), [780, 480]);
+  w.add(respond('Respond 400', J(`{ status: 'rejected', reasons: $('Validate').first().json.errors }`), 400), [520, 520]);
   w.add(chain('Qualify Lead',
     `=Lead name: {{ $json.body.name }}\nSource: {{ $json.body.source || 'unknown' }}\nMessage:\n{{ $json.body.message }}`,
     `You qualify inbound sales leads for a small business. Read the message and return only the requested fields. intent: one short phrase. budget_mentioned: the budget as written, or null if none. urgency: low, medium or high, based only on what the person says. score: 0 to 100, how likely this is a real, ready-to-buy lead (100 = clear need, budget and timeline). summary: one sentence. needs_human: true if the message is unclear, abusive, off-topic, or you are not confident. Never invent facts.`), [780, 300]);
-  w.add(geminiModel('Gemini Chat Model'), [780, 520]);
+  w.add(geminiModel('Gemini Chat Model'), [740, 560]);
   w.add(parser('Lead Fields', { type: 'object', properties: {
     intent: { type: 'string' }, budget_mentioned: { type: ['string', 'null'] }, urgency: { type: 'string', enum: ['low', 'medium', 'high'] },
     score: { type: 'number', minimum: 0, maximum: 100 }, summary: { type: 'string' }, needs_human: { type: 'boolean' } },
-    required: ['intent', 'budget_mentioned', 'urgency', 'score', 'summary', 'needs_human'] }), [980, 520]);
+    required: ['intent', 'budget_mentioned', 'urgency', 'score', 'summary', 'needs_human'] }), [900, 560]);
   w.link('Gemini Chat Model', 'Qualify Lead', { type: 'ai_languageModel' });
   w.link('Lead Fields', 'Qualify Lead', { type: 'ai_outputParser' });
   w.add(code('Check AI Answer', `
@@ -198,14 +198,14 @@ if (!q || typeof q !== 'string' || q.trim().length < 3) errs.push('question is r
 else if (q.length > 500) errs.push('question must be 500 characters or fewer');
 return { json: { valid: errs.length === 0, errors: errs, question: typeof q === 'string' ? q.trim() : '' } };`), [260, 300]);
   w.add(iff('Valid?', '={{ $json.valid }}'), [520, 300]);
-  w.add(respond('Respond 400', J(`{ answered: false, reasons: $('Validate').first().json.errors }`), 400), [780, 480]);
+  w.add(respond('Respond 400', J(`{ answered: false, reasons: $('Validate').first().json.errors }`), 400), [520, 520]);
   const faqText = faq.map((f) => `[${f.id}] Q: ${f.q}\nA: ${f.a}`).join('\n');
   w.add(chain('Answer From FAQ', `=Customer question: {{ $json.question }}`,
     `You are the support assistant for Acme Solar, a fictional home-solar installer. Answer ONLY using the FAQ below. If the FAQ does not clearly contain the answer, set supported=false, confidence low, and leave source_faq_ids empty. Never use outside knowledge. When supported, answer in one or two plain sentences and list the FAQ ids you used. confidence is 0 to 1.\n\nFAQ:\n${faqText}`), [780, 300]);
-  w.add(geminiModel('Gemini Chat Model'), [780, 520]);
+  w.add(geminiModel('Gemini Chat Model'), [740, 560]);
   w.add(parser('Answer Fields', { type: 'object', properties: {
     answer: { type: 'string' }, supported: { type: 'boolean' }, confidence: { type: 'number', minimum: 0, maximum: 1 }, source_faq_ids: { type: 'array', items: { type: 'string' } } },
-    required: ['answer', 'supported', 'confidence', 'source_faq_ids'] }), [980, 520]);
+    required: ['answer', 'supported', 'confidence', 'source_faq_ids'] }), [900, 560]);
   w.link('Gemini Chat Model', 'Answer From FAQ', { type: 'ai_languageModel' });
   w.link('Answer Fields', 'Answer From FAQ', { type: 'ai_outputParser' });
   w.add(code('Decide', `

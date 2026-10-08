@@ -34,10 +34,7 @@ for (const [name, cols] of Object.entries(tables)) {
 // Gemini credential (only if the key exists)
 let credId = null;
 const gem = secret('GEMINI_API_KEY');
-if (gem) {
-  const r = await fetch(BASE + '/rest/credentials', { headers: { cookie: process.env.N8N_COOKIE || '' } });
-  console.log('gemini key present: credential must be created via owner session (see create-credential.mjs)');
-}
+// (Gemini credential is created by scripts/create-gemini-credential.mjs once GEMINI_API_KEY exists.)
 const wfs = (await api('GET', '/api/v1/workflows?limit=250')).data;
 const idOf = (name) => wfs.find((w) => w.name === name)?.id;
 const order = ['error-handler', 'mock-crm', 'error-demo', 'chatbot-to-crm', 'ai-lead-qualify', 'support-bot-with-fallback', 'support-bot-eval'];
