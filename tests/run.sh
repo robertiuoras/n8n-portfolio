@@ -101,7 +101,7 @@ fi
 node scripts/stub-variant.mjs create ai-lead-qualify "Qualify Lead" >/dev/null
 STUB=$BASE/webhook/lead-stub
 EH="hot-$RUN@demo.test"
-post $STUB "$(jq -nc --arg e $EH '{name:"Hot Hana",email:$e,message:"x"}')" 'x-stub-llm: {"intent":"buy","budget_mentioned":"20k","urgency":"high","score":92,"summary":"Ready to buy","needs_human":false}'
+post $STUB "$(jq -nc --arg e $EH '{name:"Hot Hana",email:$e,message:"Need it now, budget 20k"}')" 'x-stub-llm: {"intent":"buy","budget_mentioned":"20k","urgency":"high","score":92,"summary":"Ready to buy","needs_human":false}'
 expect "lead (AI stubbed): score 92 -> hot-lead notification row written" "$([ "$CODE" = 200 ] && [ "$(count notifications email $EH)" = 1 ] && [ "$(rows notifications email $EH | jq -r '.[0].score')" = 92 ] && [ "$(count mock_crm_contacts email $EH)" = 1 ] && echo true)" "HTTP $CODE hot_lead_notified=$(jq -r .hot_lead_notified <<<"$BODY"); notifications rows=$(count notifications email $EH) score=$(rows notifications email $EH | jq -r '.[0].score'); CRM contacts=$(count mock_crm_contacts email $EH)"
 EC="cold-$RUN@demo.test"
 post $STUB "$(jq -nc --arg e $EC '{name:"Cold Cal",email:$e,message:"just browsing"}')" 'x-stub-llm: {"intent":"browse","budget_mentioned":null,"urgency":"low","score":30,"summary":"Just browsing","needs_human":false}'
