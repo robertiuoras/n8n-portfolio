@@ -25,10 +25,15 @@ const tables = {
   eval_runs: { run_at: S, total: N, answerable: N, unanswerable: N, accuracy: N, correct_refusal_rate: N, wrong_answers: N, missed_answers: N, ai_unavailable: N, details: S },
   workflow_errors: { workflow_name: S, node: S, message: S, execution_id: S, at: S },
   rag_chunks: { chunk_id: S, doc_id: S, title: S, section: S, text: S, embedding: S, model: S, ingested_at: S },
-  rag_handoffs: { question: S, reason: S, confidence: N, top_score: N, at: S },
-  rag_eval_runs: { run_at: S, total: N, answerable: N, unanswerable: N, retrieval_hit_rate: N, answer_accuracy: N, correct_refusal_rate: N, wrong_answers: N, missed_answers: N, ai_unavailable: N, details: S },
+  rag_handoff_log: { question: S, reason: S, confidence: N, top_score: N, at: S },
+  rag_eval_scores: { run_at: S, total: N, answerable: N, unanswerable: N, retrieval_hit_rate: N, answer_accuracy: N, correct_refusal_rate: N, wrong_answers: N, missed_answers: N, ai_unavailable: N, details: S },
 };
 const have = new Set((await api('GET', '/api/v1/data-tables?limit=250')).data.map((t) => t.name));
+// The Data Table node finds a table "by name" with a substring match and takes the first hit, so a table called
+// rag_handoffs silently captured every write meant for handoffs (2026-10-17). Refuse any name that sits inside another.
+const allNames = [...new Set([...have, ...Object.keys(tables)])];
+const clash = allNames.flatMap((a) => allNames.filter((b) => a !== b && b.includes(a)).map((b) => `"${a}" is inside "${b}"`));
+if (clash.length) throw new Error('Data Table names must not contain one another (n8n looks tables up by substring): ' + clash.join(', '));
 for (const [name, cols] of Object.entries(tables)) {
   if (have.has(name)) continue;
   await api('POST', '/api/v1/data-tables', { name, columns: Object.entries(cols).map(([n, type]) => ({ name: n, type })) });

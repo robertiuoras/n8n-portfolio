@@ -83,7 +83,7 @@
         "dataTableId": {
           "__rl": true,
           "mode": "name",
-          "value": "rag_eval_runs"
+          "value": "rag_eval_scores"
         },
         "columns": {
           "mappingMode": "defineBelow",

@@ -337,7 +337,10 @@ return [{ json: { ok: failed.length === 0 && rows.length > 0, doc_id: chunks[0].
 // ---------- 4b. rag-docs: ask ----------
 {
   const TOP_K = 4;
-  const MIN_SCORE = 0;
+  // Below this best-chunk similarity the question is handed off without asking the AI (saves a free-tier request).
+  // Measured 2026-10-17 on the 20-question eval: answerable questions 0.701-0.848, near-misses 0.706-0.770 (those
+  // need the AI's own refusal), off-topic 0.536-0.573. 0.6 sits between off-topic and the lowest answerable.
+  const MIN_SCORE = 0.6;
   const w = new WF('rag-ask', { errorWorkflow: ERR_WF });
   w.add(webhook('Question', 'POST', 'rag/ask'), [0, 300]);
   w.add(code('Validate', `
@@ -399,7 +402,7 @@ return { json: { answered, reason: answered ? 'answered' : reason, question: r.q
   retrieved: r.top.map((c) => ({ chunk_id: c.chunk_id, doc_id: c.doc_id, score: c.score })), top_score: r.top_score } };`), [2080, 300]);
   w.add(iff('Answered?', '={{ $json.answered }}'), [2340, 300]);
   w.add(respond('Respond Answer', J(`{ answered: true, answer: $json.answer, citations: $json.citations, confidence: $json.confidence, retrieved: $json.retrieved }`)), [2600, 220]);
-  w.add(dtInsert('Create Handoff', 'rag_handoffs', { question: '={{ $json.question }}', reason: '={{ $json.reason }}', confidence: '={{ $json.confidence }}', top_score: '={{ $json.top_score }}', at: NOW }), [2600, 420]);
+  w.add(dtInsert('Create Handoff', 'rag_handoff_log', { question: '={{ $json.question }}', reason: '={{ $json.reason }}', confidence: '={{ $json.confidence }}', top_score: '={{ $json.top_score }}', at: NOW }), [2600, 420]);
   w.add(respond('Respond Handoff', J(`{ answered: false, handoff: true, reason: $('Decide').first().json.reason, message: $('Decide').first().json.answer, retrieved: $('Decide').first().json.retrieved }`)), [2860, 420]);
   w.link('Question', 'Validate'); w.link('Validate', 'Valid?'); w.link('Valid?', 'Embed Question', { out: 0 }); w.link('Valid?', 'Respond 400', { out: 1 });
   w.link('Embed Question', 'Load Chunks'); w.link('Load Chunks', 'Retrieve'); w.link('Retrieve', 'Found Extracts?');
@@ -442,7 +445,7 @@ const r3 = (x) => Math.round(x * 1000) / 1000;
 return [{ json: { run_at: new Date().toISOString(), total: tests.length, answerable, unanswerable,
   retrieval_hit_rate: r3(hits / answerable), answer_accuracy: r3((correct + refusedRight) / tests.length),
   correct_refusal_rate: r3(refusedRight / unanswerable), wrong_answers: wrong, missed_answers: missed, ai_unavailable: aiDown, details: JSON.stringify(details) } }];`, 'runOnceForAllItems'), [780, 300]);
-  w.add(dtInsert('Save Run', 'rag_eval_runs', Object.fromEntries(['run_at', 'total', 'answerable', 'unanswerable', 'retrieval_hit_rate', 'answer_accuracy', 'correct_refusal_rate', 'wrong_answers', 'missed_answers', 'ai_unavailable', 'details'].map((k) => [k, `={{ $json.${k} }}`]))), [1040, 300]);
+  w.add(dtInsert('Save Run', 'rag_eval_scores', Object.fromEntries(['run_at', 'total', 'answerable', 'unanswerable', 'retrieval_hit_rate', 'answer_accuracy', 'correct_refusal_rate', 'wrong_answers', 'missed_answers', 'ai_unavailable', 'details'].map((k) => [k, `={{ $json.${k} }}`]))), [1040, 300]);
   w.link('Run Eval', 'Test Set'); w.link('Test Set', 'Ask'); w.link('Ask', 'Score'); w.link('Score', 'Save Run');
   out('rag-eval.json', w);
 }

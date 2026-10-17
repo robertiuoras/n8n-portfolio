@@ -145,7 +145,7 @@
       "typeVersion": 2,
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "\nconst question = $('Validate').first().json.question;\nconst e = $('Embed Question').first().json;\nconst qv = e.body && e.body.embedding && e.body.embedding.values;\nconst none = (reason) => [{ json: { ok: false, reason, question, top: [], top_score: 0 } }];\nif (e.statusCode !== 200 || !Array.isArray(qv)) return none('retrieval_unavailable');\nconst rows = $input.all().map((i) => i.json).filter((r) => r.chunk_id && r.embedding);\nif (!rows.length) return none('no_documents');\nconst dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };\nconst qn = Math.sqrt(dot(qv, qv));\nconst top = rows.map((r) => { const v = JSON.parse(r.embedding); return { chunk_id: r.chunk_id, doc_id: r.doc_id, title: r.title, section: r.section, text: r.text, score: dot(qv, v) / (qn * Math.sqrt(dot(v, v))) }; })\n  .sort((a, b) => b.score - a.score).slice(0, 4);\nconst top_score = Math.round(top[0].score * 1000) / 1000;\nconst slim = top.map(({ text, ...c }) => ({ ...c, score: Math.round(c.score * 1000) / 1000 }));\nif (top_score < 0) return [{ json: { ok: false, reason: 'nothing_relevant', question, top: slim, top_score } }];\nreturn [{ json: { ok: true, reason: '', question, top: slim, top_score, context: top.map((c) => '[' + c.chunk_id + '] ' + c.text).join('\\n\\n') } }];"
+        "jsCode": "\nconst question = $('Validate').first().json.question;\nconst e = $('Embed Question').first().json;\nconst qv = e.body && e.body.embedding && e.body.embedding.values;\nconst none = (reason) => [{ json: { ok: false, reason, question, top: [], top_score: 0 } }];\nif (e.statusCode !== 200 || !Array.isArray(qv)) return none('retrieval_unavailable');\nconst rows = $input.all().map((i) => i.json).filter((r) => r.chunk_id && r.embedding);\nif (!rows.length) return none('no_documents');\nconst dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };\nconst qn = Math.sqrt(dot(qv, qv));\nconst top = rows.map((r) => { const v = JSON.parse(r.embedding); return { chunk_id: r.chunk_id, doc_id: r.doc_id, title: r.title, section: r.section, text: r.text, score: dot(qv, v) / (qn * Math.sqrt(dot(v, v))) }; })\n  .sort((a, b) => b.score - a.score).slice(0, 4);\nconst top_score = Math.round(top[0].score * 1000) / 1000;\nconst slim = top.map(({ text, ...c }) => ({ ...c, score: Math.round(c.score * 1000) / 1000 }));\nif (top_score < 0.6) return [{ json: { ok: false, reason: 'nothing_relevant', question, top: slim, top_score } }];\nreturn [{ json: { ok: true, reason: '', question, top: slim, top_score, context: top.map((c) => '[' + c.chunk_id + '] ' + c.text).join('\\n\\n') } }];"
       },
       "id": "94b98802-9cb4-2ac0-b549-8bbde39bc0db",
       "position": [
@@ -324,7 +324,7 @@
         "dataTableId": {
           "__rl": true,
           "mode": "name",
-          "value": "rag_handoffs"
+          "value": "rag_handoff_log"
         },
         "columns": {
           "mappingMode": "defineBelow",
