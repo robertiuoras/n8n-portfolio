@@ -1,5 +1,6 @@
 // Idempotent: creates Data Tables, the Gemini credential (if a key exists), imports + activates every workflow.
 // Usage: node scripts/setup.mjs   (needs N8N_LOCAL_API_KEY in the environment; n8n running on :5678)
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -27,6 +28,10 @@ const tables = {
   rag_chunks: { chunk_id: S, doc_id: S, title: S, section: S, text: S, embedding: S, model: S, ingested_at: S },
   rag_handoff_log: { question: S, reason: S, confidence: N, top_score: N, at: S },
   rag_eval_scores: { run_at: S, total: N, answerable: N, unanswerable: N, retrieval_hit_rate: N, answer_accuracy: N, correct_refusal_rate: N, wrong_answers: N, missed_answers: N, ai_unavailable: N, details: S },
+  agent_bookings: { booking_id: S, customer_email: S, status: S, install_date: S, paid_amount: N, refunded_amount: N, updated_at: S },
+  agent_approvals: { approval_id: S, booking_id: S, customer_email: S, amount: N, request: S, status: S, approver: S, created_at: S, decided_at: S },
+  agent_audit: { customer_email: S, message: S, proposed: S, decision: S, reason: S, booking_id: S, approval_id: S, dry_run: S, at: S },
+  agent_eval_scores: { run_at: S, total: N, valid_requests: N, decision_accuracy: N, unsafe_actions: N, over_blocked: N, wrong_action: N, ai_unavailable: N, details: S },
 };
 const have = new Set((await api('GET', '/api/v1/data-tables?limit=250')).data.map((t) => t.name));
 // The Data Table node finds a table "by name" with a substring match and takes the first hit, so a table called
@@ -48,14 +53,35 @@ if (!credId && gem) {
   if (found) { await api('PATCH', `/api/v1/credentials/${found.id}`, { name: cred.name, data: cred.data }); credId = found.id; console.log('credential updated', credId); }
   else { credId = (await api('POST', '/api/v1/credentials', cred)).id; console.log('credential created', credId); }
 }
+// Synthetic bookings the guarded-agent eval runs against (dry runs, so they never change). Seeded once.
+const tableId = async (name) => (await api('GET', '/api/v1/data-tables?limit=250')).data.find((t) => t.name === name).id;
+const bookingsId = await tableId('agent_bookings');
+if (!(await api('GET', `/api/v1/data-tables/${bookingsId}/rows?limit=1`)).data.length) {
+  const d = new Date(); d.setDate(d.getDate() + 10); while ([0, 6].includes(d.getDay())) d.setDate(d.getDate() + 1);
+  const soon = d.toISOString().slice(0, 10);
+  const seed = [['B-1001', 'alex@demo.test', 'scheduled', soon, 4990], ['B-1004', 'alex@demo.test', 'completed', '2026-08-12', 1200],
+    ['B-1002', 'sam@demo.test', 'scheduled', soon, 6990], ['B-1003', 'jo@demo.test', 'completed', '2026-07-30', 890]];
+  await api('POST', `/api/v1/data-tables/${bookingsId}/rows`, { data: seed.map(([booking_id, customer_email, status, install_date, paid_amount]) =>
+    ({ booking_id, customer_email, status, install_date, paid_amount, refunded_amount: 0, updated_at: new Date().toISOString() })) });
+  console.log('seeded agent_bookings');
+}
+// Header key for approving refunds (credential "Agent approver key"). The value lives only in data/approver-key.txt
+// (git-ignored) and in n8n; it is made once and re-saved on every run.
+const keyFile = path.join(root, 'data', 'approver-key.txt');
+fs.mkdirSync(path.dirname(keyFile), { recursive: true });
+if (!fs.existsSync(keyFile)) fs.writeFileSync(keyFile, crypto.randomBytes(24).toString('hex'), { mode: 0o600 });
+const approverCred = { name: 'Agent approver key', type: 'httpHeaderAuth', data: { name: 'x-approver-key', value: fs.readFileSync(keyFile, 'utf8').trim() } };
+const foundKey = (await api('GET', '/api/v1/credentials?limit=250')).data.find((c) => c.name === approverCred.name && c.type === approverCred.type);
+const approverId = foundKey ? (await api('PATCH', `/api/v1/credentials/${foundKey.id}`, { name: approverCred.name, data: approverCred.data }), foundKey.id) : (await api('POST', '/api/v1/credentials', approverCred)).id;
 const wfs = (await api('GET', '/api/v1/workflows?limit=250')).data;
 const idOf = (name) => wfs.find((w) => w.name === name)?.id;
-const order = ['error-handler', 'mock-crm', 'error-demo', 'chatbot-to-crm', 'ai-lead-qualify', 'support-bot-with-fallback', 'support-bot-eval', 'rag-ingest', 'rag-ask', 'rag-eval'];
+const order = ['error-handler', 'mock-crm', 'error-demo', 'chatbot-to-crm', 'ai-lead-qualify', 'support-bot-with-fallback', 'support-bot-eval', 'rag-ingest', 'rag-ask', 'rag-eval', 'guarded-agent', 'guarded-agent-approve', 'guarded-agent-eval'];
 const ids = {};
 for (const name of order) {
   let txt = fs.readFileSync(path.join(root, 'workflows', name + '.json'), 'utf8');
   if (ids['error-handler']) txt = txt.replaceAll('__ERROR_WORKFLOW_ID__', ids['error-handler']);
   if (credId) txt = txt.replaceAll('__GEMINI_CRED_ID__', credId);
+  txt = txt.replaceAll('__APPROVER_CRED_ID__', approverId);
   const def = JSON.parse(txt);
   if (def.settings.errorWorkflow === '__ERROR_WORKFLOW_ID__') delete def.settings.errorWorkflow;
   const existing = wfs.find((w) => w.name === name) || null;
