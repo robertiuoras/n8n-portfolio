@@ -38,6 +38,12 @@ const tables = {
   ops_checks: { run_id: S, check: S, url: S, expected: N, status: N, ok: S, ms: N, error: S, checked_at: S, checked_ms: N },
   ops_alerts: { alert_id: S, check: S, status: S, opened_at: S, closed_at: S, last_error: S },
   voice_eval_scores: { run_at: S, total: N, needs_call_back: N, outcome_accuracy: N, missed_call_backs: N, extra_call_backs: N, ai_unavailable: N, details: S },
+  invoices: { invoice_key: S, supplier_name: S, supplier_abn: S, invoice_number: S, invoice_date: S, due_date: S, currency: S, subtotal: N, tax: N, total: N, line_items: S, file_name: S, status: S, entered_at: S },
+  invoice_review: { file_name: S, reasons: S, extracted: S, text_excerpt: S, status: S, created_at: S },
+  email_triage: { message_id: S, from_email: S, subject: S, category: S, urgency: S, route: S, summary: S, reasons: S, ai_status: S, at: S },
+  email_drafts: { message_id: S, to_email: S, subject: S, body: S, faq_ids: S, status: S, created_at: S },
+  email_scores: { run_at: S, total: N, category_accuracy: N, route_accuracy: N, missed_urgent: N, false_urgent: N, unsafe_drafts: N, ai_unavailable: N, details: S },
+  invoice_scores: { run_at: S, total: N, routing_accuracy: N, field_accuracy: N, right_reason: S, wrong_auto_entries: N, unneeded_reviews: N, ai_unavailable: N, details: S },
 };
 const have = new Set((await api('GET', '/api/v1/data-tables?limit=250')).data.map((t) => t.name));
 // The Data Table node finds a table "by name" with a substring match and takes the first hit, so a table called
@@ -78,6 +84,14 @@ if (!(await api('GET', `/api/v1/data-tables/${callersId}/rows?limit=1`)).data.le
     .map(([phone, customer_email]) => ({ phone, customer_email })) });
   console.log('seeded voice_callers');
 }
+// One invoice already entered, so the invoice eval can prove a second copy is caught as a duplicate.
+const invoicesId = await tableId('invoices');
+if (!(await api('GET', `/api/v1/data-tables/${invoicesId}/rows?limit=1`)).data.length) {
+  await api('POST', `/api/v1/data-tables/${invoicesId}/rows`, { data: [{ invoice_key: '86330635407|INV-0007690', supplier_name: 'GreenCable Wholesale', supplier_abn: '86330635407',
+    invoice_number: 'INV-0007690', invoice_date: '2026-09-22', due_date: '2026-10-22', currency: 'AUD', subtotal: 447, tax: 44.7, total: 491.7,
+    line_items: JSON.stringify([{ description: 'Solar cable 4mm2, 100 m roll', quantity: 3, unit_price: 149, amount: 447 }]), file_name: 'seed', status: 'entered', entered_at: new Date().toISOString() }] });
+  console.log('seeded invoices');
+}
 // Header key for approving refunds (credential "Agent approver key"). The value lives only in data/approver-key.txt
 // (git-ignored) and in n8n; it is made once and re-saved on every run.
 const keyFile = path.join(root, 'data', 'approver-key.txt');
@@ -102,7 +116,7 @@ if (!fs.existsSync(dashFile)) fs.writeFileSync(dashFile, crypto.randomBytes(18).
 const dashId = await upsertCred({ name: 'Dashboard login', type: 'httpBasicAuth', data: { user: 'ops', password: fs.readFileSync(dashFile, 'utf8').trim() } });
 const wfs = (await api('GET', '/api/v1/workflows?limit=250')).data;
 const idOf = (name) => wfs.find((w) => w.name === name)?.id;
-const order = ['error-handler', 'mock-crm', 'error-demo', 'chatbot-to-crm', 'ai-lead-qualify', 'support-bot-with-fallback', 'support-bot-eval', 'rag-ingest', 'rag-ask', 'rag-eval', 'guarded-agent', 'guarded-agent-approve', 'guarded-agent-eval', 'voice-agent', 'voice-eval', 'ops-uptime', 'ops-dashboard'];
+const order = ['error-handler', 'mock-crm', 'error-demo', 'chatbot-to-crm', 'ai-lead-qualify', 'support-bot-with-fallback', 'support-bot-eval', 'rag-ingest', 'rag-ask', 'rag-eval', 'guarded-agent', 'guarded-agent-approve', 'guarded-agent-eval', 'voice-agent', 'voice-eval', 'ops-uptime', 'ops-dashboard', 'invoice-extract', 'invoice-eval', 'email-triage', 'email-eval'];
 const ids = {};
 for (const name of order) {
   let txt = fs.readFileSync(path.join(root, 'workflows', name + '.json'), 'utf8');
