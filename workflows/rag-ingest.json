@@ -1,0 +1,437 @@
+{
+  "name": "rag-ingest",
+  "nodes": [
+    {
+      "name": "Document",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "f0112475-3bf0-6199-cedf-93ea1c99bf0d",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rag/ingest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b7f333c3-82ff-c362-71eb-17e94f5a0531",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst b = $json.body || {}; const errs = [];\nif (typeof b.doc_id !== 'string' || !/^[a-z0-9-]{2,60}$/.test(b.doc_id)) errs.push('doc_id is required: 2-60 lowercase letters, digits or dashes');\nif (typeof b.title !== 'string' || !b.title.trim()) errs.push('title is required');\nif (typeof b.text !== 'string' || b.text.trim().length < 20) errs.push('text is required (the document in markdown)');\nelse if (b.text.length > 100000) errs.push('text must be 100,000 characters or fewer');\nreturn { json: { valid: errs.length === 0, errors: errs, doc_id: b.doc_id, title: (b.title || '').trim(), text: b.text } };"
+      },
+      "id": "173be761-97cb-9ba7-29ba-dd9b16baf8fa",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "236392a5-44d5-34b5-993b-5068f8f1d35d",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1abd176a-4924-c0d1-d6b9-fe1dc0945e6c",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'rejected', reasons: $('Validate').first().json.errors }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "ca198e18-844a-ec59-b95f-2b3c7a47eaea",
+      "position": [
+        520,
+        520
+      ]
+    },
+    {
+      "name": "Chunk",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst { doc_id, title, text } = $('Validate').first().json;\nconst MAX = 1500; // characters per chunk; a longer section is split between paragraphs\nconst sections = []; let cur = { section: 'Introduction', lines: [] };\nfor (const line of text.split('\\n')) {\n  const m = line.match(/^##\\s+(.*)/);\n  if (m) { if (cur.lines.join('').trim()) sections.push(cur); cur = { section: m[1].trim(), lines: [] }; }\n  else if (!/^#\\s/.test(line)) cur.lines.push(line);\n}\nif (cur.lines.join('').trim()) sections.push(cur);\nconst chunks = [];\nfor (const s of sections) {\n  let buf = '';\n  // Gemini silently cuts off long input instead of failing, so a paragraph longer than MAX is split by sentence.\n  const pieces = s.lines.join('\\n').split(/\\n\\s*\\n/).map((x) => x.trim()).filter(Boolean)\n    .flatMap((p) => p.length <= MAX ? [p] : (p.match(/[^.!?]+[.!?]*\\s*/g) || [p]).flatMap((x) => x.match(new RegExp('[\\\\s\\\\S]{1,' + MAX + '}', 'g'))));\n  for (const p of pieces) {\n    if (buf && buf.length + p.length > MAX) { chunks.push({ section: s.section, body: buf }); buf = ''; }\n    buf += (buf ? '\\n\\n' : '') + p;\n  }\n  if (buf) chunks.push({ section: s.section, body: buf });\n}\nreturn chunks.map((c, i) => ({ json: { chunk_id: doc_id + '#' + (i + 1), doc_id, title, section: c.section, text: title + ' > ' + c.section + '\\n' + c.body } }));"
+      },
+      "id": "5c2eebf0-2ed8-d67c-5af2-ad3a4421ce6a",
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "name": "Embed Chunk",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "__GEMINI_CRED_ID__",
+          "name": "Gemini free tier"
+        }
+      },
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googlePalmApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content: { parts: [{ text: $json.text }] }, taskType: 'RETRIEVAL_DOCUMENT', title: $json.title, outputDimensionality: 768 }) }}",
+        "options": {
+          "timeout": 30000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 700
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "85e08a35-a1f6-8866-10b4-3fd3d5691f21",
+      "position": [
+        1040,
+        300
+      ]
+    },
+    {
+      "name": "Check Embeddings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst chunks = $('Chunk').all().map((i) => i.json);\nconst res = $input.all().map((i) => i.json);\nconst failed = [], rows = [], at = new Date().toISOString();\nchunks.forEach((c, i) => {\n  const r = res[i] || {}; const v = r.body && r.body.embedding && r.body.embedding.values;\n  if (r.statusCode !== 200 || !Array.isArray(v) || v.length !== 768) {\n    failed.push({ chunk_id: c.chunk_id, status: r.statusCode ?? null, error: r.error ? (r.error.message || String(r.error)) : JSON.stringify(r.body || '').slice(0, 200) });\n    return;\n  }\n  rows.push({ ...c, embedding: JSON.stringify(v.map((x) => Math.round(x * 1e6) / 1e6)), model: 'gemini-embedding-2', ingested_at: at });\n});\nreturn [{ json: { ok: failed.length === 0 && rows.length > 0, doc_id: chunks[0].doc_id, chunks: chunks.length, failed, rows } }];"
+      },
+      "id": "c9259650-7f8e-a870-7df6-52a5b33f0410",
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "name": "All Embedded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9d56a6f4-91f7-261d-8bf9-2dee2252cbbe",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e77c0614-623f-e8d1-f2ad-f59d929c9c1a",
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "name": "Delete Old Chunks",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "rag_chunks"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "doc_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.doc_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "cdaa3a40-2d4b-2dc4-8fbd-fce93d723208",
+      "position": [
+        1820,
+        220
+      ]
+    },
+    {
+      "name": "Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $('Check Embeddings').first().json.rows.map((r) => ({ json: r }));"
+      },
+      "id": "9c7eb007-8615-cbbc-3bcc-57aa8570dc47",
+      "position": [
+        2080,
+        220
+      ]
+    },
+    {
+      "name": "Store Chunk",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "rag_chunks"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chunk_id": "={{ $json.chunk_id }}",
+            "doc_id": "={{ $json.doc_id }}",
+            "title": "={{ $json.title }}",
+            "section": "={{ $json.section }}",
+            "text": "={{ $json.text }}",
+            "embedding": "={{ $json.embedding }}",
+            "model": "={{ $json.model }}",
+            "ingested_at": "={{ $json.ingested_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "05978292-c4d9-610d-54c8-70c57eae19de",
+      "position": [
+        2340,
+        220
+      ]
+    },
+    {
+      "name": "Respond Ingested",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'ingested', doc_id: $('Check Embeddings').first().json.doc_id, chunks: $('Check Embeddings').first().json.chunks, model: 'gemini-embedding-2', dimensions: 768 }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "b481049e-57b4-bc77-ce94-e3682c60cef3",
+      "position": [
+        2600,
+        220
+      ]
+    },
+    {
+      "name": "Respond 502",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'failed', reason: 'Some chunks could not be embedded, so the stored copy of this document was left unchanged.', failed: $json.failed }) }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "faf151f5-1893-62b9-57af-a44f55ee9bb0",
+      "position": [
+        1820,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "Document": {
+      "main": [
+        [
+          {
+            "node": "Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Chunk",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk": {
+      "main": [
+        [
+          {
+            "node": "Embed Chunk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Chunk": {
+      "main": [
+        [
+          {
+            "node": "Check Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Embeddings": {
+      "main": [
+        [
+          {
+            "node": "All Embedded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Embedded?": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 502",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Old Chunks": {
+      "main": [
+        [
+          {
+            "node": "Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rows": {
+      "main": [
+        [
+          {
+            "node": "Store Chunk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Chunk": {
+      "main": [
+        [
+          {
+            "node": "Respond Ingested",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__"
+  }
+}

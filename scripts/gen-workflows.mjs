@@ -3,13 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as L from './lib.mjs';
-const { WF, webhook, respond, code, iff, sw, dtGet, dtInsert, dtUpdate, httpReq, wait, geminiModel, parser, chain, retryBlock, BASE } = L;
+const { WF, webhook, respond, code, iff, sw, dtGet, dtGetAll, dtDelete, dtInsert, dtUpdate, httpReq, wait, geminiModel, parser, chain, retryBlock, BASE, EMBED_MODEL, EMBED_DIMS, EMBED_URL } = L;
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const out = (file, w) => fs.writeFileSync(path.join(root, 'workflows', file), JSON.stringify(w.json(), null, 2) + '\n');
 const NOW = '={{ $now.toISO() }}';
 const J = (o) => `={{ JSON.stringify(${o}) }}`;
 const faq = JSON.parse(fs.readFileSync(path.join(root, 'faq.json'), 'utf8'));
 const evalSet = JSON.parse(fs.readFileSync(path.join(root, 'tests/support-eval.json'), 'utf8'));
+const ragEvalSet = JSON.parse(fs.readFileSync(path.join(root, 'tests/rag-eval.json'), 'utf8'));
 const ERR_WF = '__ERROR_WORKFLOW_ID__';
 
 // ---------- 0. error handler ----------
@@ -265,5 +266,187 @@ return [{ json: { run_at: new Date().toISOString(), total: tests.length, answera
   w.add(dtInsert('Save Run', 'eval_runs', Object.fromEntries(['run_at', 'total', 'answerable', 'unanswerable', 'accuracy', 'correct_refusal_rate', 'wrong_answers', 'missed_answers', 'ai_unavailable', 'details'].map((k) => [k, `={{ $json.${k} }}`]))), [1040, 300]);
   w.link('Run Eval', 'Test Set'); w.link('Test Set', 'Ask Bot'); w.link('Ask Bot', 'Score'); w.link('Score', 'Save Run');
   out('support-bot-eval.json', w);
+}
+// ---------- 4. rag-docs: ingest ----------
+// POST { doc_id, title, text } (markdown). Splits on "## " headings, embeds every chunk, and only when ALL chunks
+// embedded does it replace that document's old chunks, so a failed re-ingest never leaves a half-empty index.
+{
+  const w = new WF('rag-ingest', { errorWorkflow: ERR_WF });
+  w.add(webhook('Document', 'POST', 'rag/ingest'), [0, 300]);
+  w.add(code('Validate', `
+const b = $json.body || {}; const errs = [];
+if (typeof b.doc_id !== 'string' || !/^[a-z0-9-]{2,60}$/.test(b.doc_id)) errs.push('doc_id is required: 2-60 lowercase letters, digits or dashes');
+if (typeof b.title !== 'string' || !b.title.trim()) errs.push('title is required');
+if (typeof b.text !== 'string' || b.text.trim().length < 20) errs.push('text is required (the document in markdown)');
+else if (b.text.length > 100000) errs.push('text must be 100,000 characters or fewer');
+return { json: { valid: errs.length === 0, errors: errs, doc_id: b.doc_id, title: (b.title || '').trim(), text: b.text } };`), [260, 300]);
+  w.add(iff('Valid?', '={{ $json.valid }}'), [520, 300]);
+  w.add(respond('Respond 400', J(`{ status: 'rejected', reasons: $('Validate').first().json.errors }`), 400), [520, 520]);
+  w.add(code('Chunk', `
+const { doc_id, title, text } = $('Validate').first().json;
+const MAX = 1500; // characters per chunk; a longer section is split between paragraphs
+const sections = []; let cur = { section: 'Introduction', lines: [] };
+for (const line of text.split('\\n')) {
+  const m = line.match(/^##\\s+(.*)/);
+  if (m) { if (cur.lines.join('').trim()) sections.push(cur); cur = { section: m[1].trim(), lines: [] }; }
+  else if (!/^#\\s/.test(line)) cur.lines.push(line);
+}
+if (cur.lines.join('').trim()) sections.push(cur);
+const chunks = [];
+for (const s of sections) {
+  let buf = '';
+  // Gemini silently cuts off long input instead of failing, so a paragraph longer than MAX is split by sentence.
+  const pieces = s.lines.join('\\n').split(/\\n\\s*\\n/).map((x) => x.trim()).filter(Boolean)
+    .flatMap((p) => p.length <= MAX ? [p] : (p.match(/[^.!?]+[.!?]*\\s*/g) || [p]).flatMap((x) => x.match(new RegExp('[\\\\s\\\\S]{1,' + MAX + '}', 'g'))));
+  for (const p of pieces) {
+    if (buf && buf.length + p.length > MAX) { chunks.push({ section: s.section, body: buf }); buf = ''; }
+    buf += (buf ? '\\n\\n' : '') + p;
+  }
+  if (buf) chunks.push({ section: s.section, body: buf });
+}
+return chunks.map((c, i) => ({ json: { chunk_id: doc_id + '#' + (i + 1), doc_id, title, section: c.section, text: title + ' > ' + c.section + '\\n' + c.body } }));`, 'runOnceForAllItems'), [780, 300]);
+  // One request per chunk, 0.7 s apart: under the free tier's 100 a minute.
+  w.add(httpReq('Embed Chunk', 'POST', EMBED_URL, { cred: 'googlePalmApi', timeout: 30000, batch: { batchSize: 1, batchInterval: 700 },
+    body: `={{ JSON.stringify({ content: { parts: [{ text: $json.text }] }, taskType: 'RETRIEVAL_DOCUMENT', title: $json.title, outputDimensionality: ${EMBED_DIMS} }) }}` }), [1040, 300]);
+  w.add(code('Check Embeddings', `
+const chunks = $('Chunk').all().map((i) => i.json);
+const res = $input.all().map((i) => i.json);
+const failed = [], rows = [], at = new Date().toISOString();
+chunks.forEach((c, i) => {
+  const r = res[i] || {}; const v = r.body && r.body.embedding && r.body.embedding.values;
+  if (r.statusCode !== 200 || !Array.isArray(v) || v.length !== ${EMBED_DIMS}) {
+    failed.push({ chunk_id: c.chunk_id, status: r.statusCode ?? null, error: r.error ? (r.error.message || String(r.error)) : JSON.stringify(r.body || '').slice(0, 200) });
+    return;
+  }
+  rows.push({ ...c, embedding: JSON.stringify(v.map((x) => Math.round(x * 1e6) / 1e6)), model: '${EMBED_MODEL}', ingested_at: at });
+});
+return [{ json: { ok: failed.length === 0 && rows.length > 0, doc_id: chunks[0].doc_id, chunks: chunks.length, failed, rows } }];`, 'runOnceForAllItems'), [1300, 300]);
+  w.add(iff('All Embedded?', '={{ $json.ok }}'), [1560, 300]);
+  w.add(dtDelete('Delete Old Chunks', 'rag_chunks', { doc_id: '={{ $json.doc_id }}' }), [1820, 220]);
+  w.add(code('Rows', `return $('Check Embeddings').first().json.rows.map((r) => ({ json: r }));`, 'runOnceForAllItems'), [2080, 220]);
+  w.add(dtInsert('Store Chunk', 'rag_chunks', Object.fromEntries(['chunk_id', 'doc_id', 'title', 'section', 'text', 'embedding', 'model', 'ingested_at'].map((k) => [k, `={{ $json.${k} }}`]))), [2340, 220]);
+  w.add(respond('Respond Ingested', J(`{ status: 'ingested', doc_id: $('Check Embeddings').first().json.doc_id, chunks: $('Check Embeddings').first().json.chunks, model: '${EMBED_MODEL}', dimensions: ${EMBED_DIMS} }`)), [2600, 220]);
+  w.add(respond('Respond 502', J(`{ status: 'failed', reason: 'Some chunks could not be embedded, so the stored copy of this document was left unchanged.', failed: $json.failed }`), 502), [1820, 440]);
+  w.link('Document', 'Validate'); w.link('Validate', 'Valid?'); w.link('Valid?', 'Chunk', { out: 0 }); w.link('Valid?', 'Respond 400', { out: 1 });
+  w.link('Chunk', 'Embed Chunk'); w.link('Embed Chunk', 'Check Embeddings'); w.link('Check Embeddings', 'All Embedded?');
+  w.link('All Embedded?', 'Delete Old Chunks', { out: 0 }); w.link('All Embedded?', 'Respond 502', { out: 1 });
+  w.link('Delete Old Chunks', 'Rows'); w.link('Rows', 'Store Chunk'); w.link('Store Chunk', 'Respond Ingested');
+  out('rag-ingest.json', w);
+}
+
+// ---------- 4b. rag-docs: ask ----------
+{
+  const TOP_K = 4;
+  // Below this best-chunk similarity the question is handed off without asking the AI (saves a free-tier request).
+  // Measured 2026-10-17 on the 20-question eval: answerable questions 0.701-0.848, near-misses 0.706-0.770 (those
+  // need the AI's own refusal), off-topic 0.536-0.573. 0.6 sits between off-topic and the lowest answerable.
+  const MIN_SCORE = 0.6;
+  const w = new WF('rag-ask', { errorWorkflow: ERR_WF });
+  w.add(webhook('Question', 'POST', 'rag/ask'), [0, 300]);
+  w.add(code('Validate', `
+const q = ($json.body || {}).question;
+const errs = [];
+if (!q || typeof q !== 'string' || q.trim().length < 3) errs.push('question is required');
+else if (q.length > 500) errs.push('question must be 500 characters or fewer');
+return { json: { valid: errs.length === 0, errors: errs, question: typeof q === 'string' ? q.trim() : '' } };`), [260, 300]);
+  w.add(iff('Valid?', '={{ $json.valid }}'), [520, 300]);
+  w.add(respond('Respond 400', J(`{ answered: false, reasons: $('Validate').first().json.errors }`), 400), [520, 520]);
+  w.add(httpReq('Embed Question', 'POST', EMBED_URL, { cred: 'googlePalmApi', timeout: 30000,
+    body: `={{ JSON.stringify({ content: { parts: [{ text: $json.question }] }, taskType: 'RETRIEVAL_QUERY', outputDimensionality: ${EMBED_DIMS} }) }}` }), [780, 300]);
+  w.add(dtGetAll('Load Chunks', 'rag_chunks'), [1040, 300]);
+  // Brute-force cosine similarity in a Code node: fine for a few thousand chunks. Past that, the same step becomes a
+  // query to a vector database (pgvector, Qdrant) and nothing else in the workflow changes.
+  w.add(code('Retrieve', `
+const question = $('Validate').first().json.question;
+const e = $('Embed Question').first().json;
+const qv = e.body && e.body.embedding && e.body.embedding.values;
+const none = (reason) => [{ json: { ok: false, reason, question, top: [], top_score: 0 } }];
+if (e.statusCode !== 200 || !Array.isArray(qv)) return none('retrieval_unavailable');
+const rows = $input.all().map((i) => i.json).filter((r) => r.chunk_id && r.embedding);
+if (!rows.length) return none('no_documents');
+const dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
+const qn = Math.sqrt(dot(qv, qv));
+const top = rows.map((r) => { const v = JSON.parse(r.embedding); return { chunk_id: r.chunk_id, doc_id: r.doc_id, title: r.title, section: r.section, text: r.text, score: dot(qv, v) / (qn * Math.sqrt(dot(v, v))) }; })
+  .sort((a, b) => b.score - a.score).slice(0, ${TOP_K});
+const top_score = Math.round(top[0].score * 1000) / 1000;
+const slim = top.map(({ text, ...c }) => ({ ...c, score: Math.round(c.score * 1000) / 1000 }));
+if (top_score < ${MIN_SCORE}) return [{ json: { ok: false, reason: 'nothing_relevant', question, top: slim, top_score } }];
+return [{ json: { ok: true, reason: '', question, top: slim, top_score, context: top.map((c) => '[' + c.chunk_id + '] ' + c.text).join('\\n\\n') } }];`, 'runOnceForAllItems'), [1300, 300]);
+  w.add(iff('Found Extracts?', '={{ $json.ok }}'), [1560, 300]);
+  w.add(chain('Answer From Docs', `=Customer question: {{ $json.question }}\n\nDocument extracts:\n{{ $json.context }}`,
+    `You are the support assistant for Acme Solar, a fictional home-solar installer. Answer ONLY from the document extracts in the user message. Each extract starts with its id in square brackets, for example [price-sheet#2]. If the extracts do not clearly contain the answer, set supported=false, confidence low, and leave cited_chunk_ids empty. Do not guess and do not use outside knowledge, even when the question is close to something the extracts cover. When supported, answer in one to three plain sentences, include the exact figures from the extracts, and list the ids of the extracts you used in cited_chunk_ids. confidence is 0 to 1.`), [1820, 220]);
+  w.add(geminiModel('Gemini Chat Model'), [1780, 480]);
+  w.add(parser('Answer Fields', { type: 'object', properties: {
+    answer: { type: 'string' }, supported: { type: 'boolean' }, confidence: { type: 'number', minimum: 0, maximum: 1 }, cited_chunk_ids: { type: 'array', items: { type: 'string' } } },
+    required: ['answer', 'supported', 'confidence', 'cited_chunk_ids'] }), [1940, 480]);
+  w.link('Gemini Chat Model', 'Answer From Docs', { type: 'ai_languageModel' });
+  w.link('Answer Fields', 'Answer From Docs', { type: 'ai_outputParser' });
+  w.add(code('Decide', `
+const r = $('Retrieve').first().json;
+let reason = r.reason || '', o = null;
+if (r.ok) {
+  o = $json.output;
+  const shape = o && typeof o === 'object' && typeof o.answer === 'string' && typeof o.supported === 'boolean' && typeof o.confidence === 'number' && Array.isArray(o.cited_chunk_ids);
+  const retrieved = r.top.map((c) => c.chunk_id);
+  if ($json.error) reason = 'ai_unavailable';
+  else if (!shape) reason = 'ai_output_unusable';
+  else if (!o.supported) reason = 'not_in_docs';
+  else if (o.confidence < 0.6) reason = 'low_confidence';
+  else if (o.cited_chunk_ids.length === 0 || !o.cited_chunk_ids.every((id) => retrieved.includes(id))) reason = 'citation_not_retrieved';
+}
+const answered = reason === '';
+return { json: { answered, reason: answered ? 'answered' : reason, question: r.question,
+  answer: answered ? o.answer : "I can't answer that reliably from our documents. I've passed your question to our team and they will reply by email.",
+  confidence: o && typeof o.confidence === 'number' ? o.confidence : 0,
+  citations: answered ? r.top.filter((c) => o.cited_chunk_ids.includes(c.chunk_id)).map((c) => ({ chunk_id: c.chunk_id, title: c.title, section: c.section })) : [],
+  retrieved: r.top.map((c) => ({ chunk_id: c.chunk_id, doc_id: c.doc_id, score: c.score })), top_score: r.top_score } };`), [2080, 300]);
+  w.add(iff('Answered?', '={{ $json.answered }}'), [2340, 300]);
+  w.add(respond('Respond Answer', J(`{ answered: true, answer: $json.answer, citations: $json.citations, confidence: $json.confidence, retrieved: $json.retrieved }`)), [2600, 220]);
+  w.add(dtInsert('Create Handoff', 'rag_handoff_log', { question: '={{ $json.question }}', reason: '={{ $json.reason }}', confidence: '={{ $json.confidence }}', top_score: '={{ $json.top_score }}', at: NOW }), [2600, 420]);
+  w.add(respond('Respond Handoff', J(`{ answered: false, handoff: true, reason: $('Decide').first().json.reason, message: $('Decide').first().json.answer, retrieved: $('Decide').first().json.retrieved }`)), [2860, 420]);
+  w.link('Question', 'Validate'); w.link('Validate', 'Valid?'); w.link('Valid?', 'Embed Question', { out: 0 }); w.link('Valid?', 'Respond 400', { out: 1 });
+  w.link('Embed Question', 'Load Chunks'); w.link('Load Chunks', 'Retrieve'); w.link('Retrieve', 'Found Extracts?');
+  w.link('Found Extracts?', 'Answer From Docs', { out: 0 }); w.link('Found Extracts?', 'Decide', { out: 1 }); w.link('Answer From Docs', 'Decide');
+  w.link('Decide', 'Answered?'); w.link('Answered?', 'Respond Answer', { out: 0 }); w.link('Answered?', 'Create Handoff', { out: 1 }); w.link('Create Handoff', 'Respond Handoff');
+  out('rag-ask.json', w);
+}
+
+// ---------- 4c. rag-docs: eval ----------
+{
+  const w = new WF('rag-eval', { errorWorkflow: ERR_WF });
+  w.add({ name: 'Run Eval', type: 'n8n-nodes-base.manualTrigger', typeVersion: 1, parameters: {} }, [0, 300]);
+  w.add(code('Test Set', `return ${JSON.stringify(ragEvalSet)}.map((t, i) => ({ json: { n: i + 1, ...t } }));`, 'runOnceForAllItems'), [260, 300]);
+  // Same pacing as support-bot-eval: one question every 8 s stays under the free tier's 15 answers a minute.
+  w.add(httpReq('Ask', 'POST', `${BASE}/webhook/rag/ask`, { body: `={{ JSON.stringify({ question: $json.q }) }}`, timeout: 90000, batch: { batchSize: 1, batchInterval: 8000 } }), [520, 300]);
+  w.add(code('Score', `
+const tests = $('Test Set').all().map((i) => i.json);
+const res = $input.all().map((i) => i.json);
+let hits = 0, correct = 0, refusedRight = 0, wrong = 0, missed = 0, aiDown = 0; const details = [];
+tests.forEach((t, i) => {
+  const r = (res[i] && res[i].body) || {};
+  const answered = r.answered === true;
+  if (['ai_unavailable', 'ai_output_unusable', 'retrieval_unavailable'].includes(r.reason)) aiDown++;
+  const retrievedDocs = (r.retrieved || []).map((c) => c.doc_id);
+  let verdict, hit = null;
+  if (t.answerable) {
+    hit = t.expect_docs.some((d) => retrievedDocs.includes(d)); if (hit) hits++;
+    const citedDocs = (r.citations || []).map((c) => c.chunk_id.split('#')[0]);
+    const fact = t.expect_any.some((k) => String(r.answer || '').toLowerCase().includes(k.toLowerCase()));
+    if (!answered) { missed++; verdict = 'missed (refused)'; }
+    else if (!citedDocs.some((d) => t.expect_docs.includes(d))) { wrong++; verdict = 'WRONG: cited the wrong document'; }
+    else if (!fact) { wrong++; verdict = 'WRONG: expected fact missing'; }
+    else { correct++; verdict = 'correct'; }
+  } else if (!answered) { refusedRight++; verdict = 'correct refusal'; }
+  else { wrong++; verdict = 'WRONG: answered an unanswerable question'; }
+  details.push({ n: t.n, q: t.q, kind: t.kind || 'answerable', verdict, reason: r.reason || null, retrieval_hit: hit, top_score: r.retrieved && r.retrieved[0] ? r.retrieved[0].score : null, answer: answered ? r.answer : null });
+});
+const answerable = tests.filter((t) => t.answerable).length, unanswerable = tests.length - answerable;
+const r3 = (x) => Math.round(x * 1000) / 1000;
+return [{ json: { run_at: new Date().toISOString(), total: tests.length, answerable, unanswerable,
+  retrieval_hit_rate: r3(hits / answerable), answer_accuracy: r3((correct + refusedRight) / tests.length),
+  correct_refusal_rate: r3(refusedRight / unanswerable), wrong_answers: wrong, missed_answers: missed, ai_unavailable: aiDown, details: JSON.stringify(details) } }];`, 'runOnceForAllItems'), [780, 300]);
+  w.add(dtInsert('Save Run', 'rag_eval_scores', Object.fromEntries(['run_at', 'total', 'answerable', 'unanswerable', 'retrieval_hit_rate', 'answer_accuracy', 'correct_refusal_rate', 'wrong_answers', 'missed_answers', 'ai_unavailable', 'details'].map((k) => [k, `={{ $json.${k} }}`]))), [1040, 300]);
+  w.link('Run Eval', 'Test Set'); w.link('Test Set', 'Ask'); w.link('Ask', 'Score'); w.link('Score', 'Save Run');
+  out('rag-eval.json', w);
 }
 console.log('workflows written');

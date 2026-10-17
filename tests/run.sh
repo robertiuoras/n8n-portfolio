@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end tests against the local n8n (http://localhost:5678). Every outcome is proven by reading Data Table
 # rows back through the n8n API, not just by looking at HTTP codes. Writes tests/RESULTS.md.
-# Needs: curl, jq, node, the N8N_LOCAL_API_KEY secret.  Takes about 2 minutes (the timeout cases wait on purpose).
+# Needs: curl, jq, node, the N8N_LOCAL_API_KEY secret.  Takes about 9 minutes (the timeout cases wait on purpose and
+# both evals pace one question every 8 s for the Gemini free tier).
 set -u
 cd "$(dirname "$0")/.."
 BASE=http://localhost:5678
@@ -151,6 +152,58 @@ post $SS "$(jq -nc --arg q "$Qe" '{question:$q}')" 'x-stub-llm: error'
 expect "support (AI stubbed): AI outage -> honest refusal and a handoff row" "$([ "$CODE" = 200 ] && [ "$(jq -r .answered <<<"$BODY")" = false ] && [ "$(rows handoffs question "$Qe" | jq -r '.[0].reason')" = ai_unavailable ] && echo true)" "HTTP $CODE answered=$(jq -r .answered <<<"$BODY"); handoffs row reason=$(rows handoffs question "$Qe" | jq -r '.[0].reason')"
 node scripts/stub-variant.mjs delete support-bot-with-fallback "Answer From FAQ" >/dev/null
 
+echo "== rag-docs (RAG over documents)"
+ING=$BASE/webhook/rag/ingest; ASK=$BASE/webhook/rag/ask
+# ingest <doc_id> <file> [url]: posts a markdown file from docs/ as {doc_id, title, text}
+ingest() { post "${3:-$ING}" "$(jq -nc --arg d "$1" --arg t "$(head -1 "$2" | sed 's/^# //')" --rawfile x "$2" '{doc_id:$d,title:$t,text:$x}')"; }
+post $ING '{"doc_id":"Bad Id!","title":"","text":""}'
+expect "rag ingest: invalid document is rejected (400) with reasons" "$([ "$CODE" = 400 ] && [ "$(jq '.reasons|length' <<<"$BODY")" = 3 ] && echo true)" "HTTP $CODE reasons=$(jq -c .reasons <<<"$BODY")"
+ok=true; ev=""
+for f in docs/*.md; do d=$(basename "$f" .md); ingest "$d" "$f"
+  n=$(jq -r .chunks <<<"$BODY"); stored=$(rows rag_chunks doc_id "$d"); s=$(jq 'length' <<<"$stored"); u=$(jq '[.[].chunk_id]|unique|length' <<<"$stored")
+  { [ "$CODE" = 200 ] && [ "$s" = "$n" ] && [ "$u" = "$n" ]; } || ok=false; ev+="$d: HTTP $CODE, $n chunks, $s rows stored ($u distinct); "; done
+expect "rag ingest: every document re-ingested; each is stored once, the old copy replaced, not doubled" "$ok" "$ev"
+before=$(rows rag_chunks doc_id price-sheet | jq -c '[length, (map(.ingested_at)|unique)]')
+node scripts/stub-variant.mjs create rag-ingest "Embed Chunk" >/dev/null
+ingest price-sheet docs/price-sheet.md $BASE/webhook/rag/ingest-stub
+node scripts/stub-variant.mjs delete rag-ingest "Embed Chunk" >/dev/null
+after=$(rows rag_chunks doc_id price-sheet | jq -c '[length, (map(.ingested_at)|unique)]')
+expect "rag ingest (embeddings API down): 502 and the stored copy of the document is left untouched" "$([ "$CODE" = 502 ] && [ "$before" = "$after" ] && echo true)" "HTTP $CODE failed chunks=$(jq '.failed|length' <<<"$BODY") first error status=$(jq -r '.failed[0].status' <<<"$BODY"); price-sheet rows [count, ingested_at] before=$before after=$after"
+post $ASK '{}'
+expect "rag ask: missing question is rejected (400)" "$([ "$CODE" = 400 ] && echo true)" "HTTP $CODE"
+if [ -n "$GEM" ]; then
+  R1="How much is the 8.8 kW system? ($RUN)"
+  post $ASK "$(jq -nc --arg q "$R1" '{question:$q}')"
+  expect "rag ask: REAL Gemini answers from the price sheet, quotes the figure and cites the chunk it used" "$([ "$(jq -r .answered <<<"$BODY")" = true ] && jq -e '[.citations[].chunk_id|startswith("price-sheet#")]|any' <<<"$BODY" >/dev/null && jq -e '.answer|test("6,?990")' <<<"$BODY" >/dev/null && [ "$(count rag_handoff_log question "$R1")" = 0 ] && echo true)" "HTTP $CODE in ${TIME}s $(jq -c '{answer,citations:[.citations[].chunk_id],confidence,top:.retrieved[0]}' <<<"$BODY"); handoffs rows=$(count rag_handoff_log question "$R1")"
+  R2="What is the capital of France? ($RUN)"
+  post $ASK "$(jq -nc --arg q "$R2" '{question:$q}')"
+  h=$(rows rag_handoff_log question "$R2" | jq -r '.[0].reason')
+  expect "rag ask: REAL Gemini refuses a question the documents do not cover and hands it off" "$([ "$(jq -r .answered <<<"$BODY")" = false ] && [ "$(count rag_handoff_log question "$R2")" = 1 ] && [ "${h#ai_}" = "$h" ] && [ "$h" != retrieval_unavailable ] && echo true)" "HTTP $CODE answered=$(jq -r .answered <<<"$BODY"); handoffs row reason=$h top_score=$(rows rag_handoff_log question "$R2" | jq -r '.[0].top_score')"
+fi
+node scripts/stub-variant.mjs create rag-ask "Embed Question" >/dev/null
+R3="Embeddings down: warranty? $RUN"
+post $BASE/webhook/rag/ask-stub "$(jq -nc --arg q "$R3" '{question:$q}')"
+node scripts/stub-variant.mjs delete rag-ask "Embed Question" >/dev/null
+expect "rag ask (embeddings API down): honest refusal and a handoff row, the AI is never asked" "$([ "$CODE" = 200 ] && [ "$(jq -r .answered <<<"$BODY")" = false ] && [ "$(rows rag_handoff_log question "$R3" | jq -r '.[0].reason')" = retrieval_unavailable ] && echo true)" "HTTP $CODE answered=$(jq -r .answered <<<"$BODY"); handoffs row reason=$(rows rag_handoff_log question "$R3" | jq -r '.[0].reason')"
+node scripts/stub-variant.mjs create rag-ask "Answer From Docs" >/dev/null
+RS=$BASE/webhook/rag/ask-stub
+Ra="How much is the 8.8 kW system? stub $RUN"
+post $RS "$(jq -nc --arg q "$Ra" '{question:$q}')" 'x-stub-llm: {"answer":"It is $6,990.","supported":true,"confidence":0.95,"cited_chunk_ids":["price-sheet#2"]}'
+expect "rag ask (AI stubbed): supported, confident, cites a retrieved chunk -> answered with that citation" "$([ "$(jq -r .answered <<<"$BODY")" = true ] && [ "$(jq -r '.citations[0].chunk_id' <<<"$BODY")" = price-sheet#2 ] && [ "$(count rag_handoff_log question "$Ra")" = 0 ] && echo true)" "HTTP $CODE $(jq -c '{answered,citations,retrieved:[.retrieved[].chunk_id]}' <<<"$BODY")"
+Rb="How much is the 8.8 kW system? cite-check $RUN"
+post $RS "$(jq -nc --arg q "$Rb" '{question:$q}')" 'x-stub-llm: {"answer":"It is $6,990.","supported":true,"confidence":0.95,"cited_chunk_ids":["warranty-terms#3"]}'
+expect "rag ask (AI stubbed): cites a real chunk that was NOT retrieved for this question -> refused" "$([ "$(jq -r .answered <<<"$BODY")" = false ] && [ "$(rows rag_handoff_log question "$Rb" | jq -r '.[0].reason')" = citation_not_retrieved ] && echo true)" "answered=$(jq -r .answered <<<"$BODY"); retrieved=$(jq -c '[.retrieved[].chunk_id]' <<<"$BODY"); handoffs row reason=$(rows rag_handoff_log question "$Rb" | jq -r '.[0].reason')"
+Rc="Panel output after 25 years? lowconf $RUN"
+post $RS "$(jq -nc --arg q "$Rc" '{question:$q}')" 'x-stub-llm: {"answer":"Maybe 80 percent.","supported":true,"confidence":0.4,"cited_chunk_ids":["warranty-terms#3"]}'
+expect "rag ask (AI stubbed): confidence 0.4 (< 0.6) -> refusal + handoff row" "$([ "$(jq -r .answered <<<"$BODY")" = false ] && [ "$(rows rag_handoff_log question "$Rc" | jq -r '.[0].reason')" = low_confidence ] && echo true)" "answered=$(jq -r .answered <<<"$BODY"); handoffs row reason=$(rows rag_handoff_log question "$Rc" | jq -r '.[0].reason') confidence=$(rows rag_handoff_log question "$Rc" | jq -r '.[0].confidence')"
+Rd="EV charger price? unsupported $RUN"
+post $RS "$(jq -nc --arg q "$Rd" '{question:$q}')" 'x-stub-llm: {"answer":"","supported":false,"confidence":0.1,"cited_chunk_ids":[]}'
+expect "rag ask (AI stubbed): supported=false -> refusal + handoff row" "$([ "$(jq -r .answered <<<"$BODY")" = false ] && [ "$(rows rag_handoff_log question "$Rd" | jq -r '.[0].reason')" = not_in_docs ] && echo true)" "answered=$(jq -r .answered <<<"$BODY"); handoffs row reason=$(rows rag_handoff_log question "$Rd" | jq -r '.[0].reason')"
+Re="Warranty? outage $RUN"
+post $RS "$(jq -nc --arg q "$Re" '{question:$q}')" 'x-stub-llm: error'
+expect "rag ask (AI stubbed): AI outage -> honest refusal and a handoff row" "$([ "$CODE" = 200 ] && [ "$(jq -r .answered <<<"$BODY")" = false ] && [ "$(rows rag_handoff_log question "$Re" | jq -r '.[0].reason')" = ai_unavailable ] && echo true)" "HTTP $CODE answered=$(jq -r .answered <<<"$BODY"); handoffs row reason=$(rows rag_handoff_log question "$Re" | jq -r '.[0].reason')"
+node scripts/stub-variant.mjs delete rag-ask "Answer From Docs" >/dev/null
+
 echo "== error-handler"
 curl -s "$BASE/webhook/error-demo" >/dev/null
 got=0; for i in $(seq 1 15); do got=$(rows workflow_errors workflow_name error-demo | jq 'length'); [ "$got" -ge 1 ] && break; sleep 1; done
@@ -171,6 +224,19 @@ else
   expect "eval: runs the 20-question set against the bot and writes a row to eval_runs" "$([ "$after" -eq $((before+1)) ] && [ "$(jq -r .total <<<"$last")" = 20 ] && echo true)" "eval_runs rows $before -> $after; $last; AI key present: NO, so every question fell back to a handoff"
 fi
 
+echo "== rag eval (20 questions)"
+rb=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid rag_eval_scores)/rows" | jq '.data|length')
+node scripts/run-manual.mjs rag-eval "Run Eval" >/dev/null 2>&1
+for i in $(seq 1 150); do c=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid rag_eval_scores)/rows" | jq '.data|length'); [ "$c" -gt "$rb" ] && break; sleep 2; done
+ra=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid rag_eval_scores)/rows" | jq '.data|length')
+rlast=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid rag_eval_scores)/rows" | jq -c '.data|last|del(.details,.createdAt,.updatedAt)')
+if [ -n "$GEM" ]; then
+  expect "rag eval: 20 questions against the REAL pipeline, none lost to an outage, row written to rag_eval_scores" "$([ "$ra" -eq $((rb+1)) ] && [ "$(jq -r .total <<<"$rlast")" = 20 ] && [ "$(jq -r .ai_unavailable <<<"$rlast")" = 0 ] && echo true)" "rag_eval_scores rows $rb -> $ra; $rlast"
+  RAG_DETAILS=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid rag_eval_scores)/rows" | jq -r '.data|last|.details|fromjson|.[]|"| \(.n) | \(.q) | \(.kind) | \(if .retrieval_hit == null then "" else (.retrieval_hit|tostring) end) | \(.top_score) | \(.verdict) | \(.reason // "") |"')
+else
+  expect "rag eval: runs the 20-question set and writes a row to rag_eval_scores" "$([ "$ra" -eq $((rb+1)) ] && [ "$(jq -r .total <<<"$rlast")" = 20 ] && echo true)" "rag_eval_scores rows $rb -> $ra; $rlast; AI key present: NO"
+fi
+
 {
   echo "# Test results"
   echo
@@ -188,6 +254,12 @@ fi
     echo; echo "## Eval answers (latest run, real Gemini)"; echo
     echo "| # | Question | Verdict | Bot reason |"; echo "|---|---|---|---|"
     printf '%s\n' "$EVAL_DETAILS"
+  fi
+  if [ -n "${RAG_DETAILS:-}" ]; then
+    echo; echo "## RAG eval answers (latest run, real Gemini)"; echo
+    echo "Retrieval hit = a chunk from the expected document was in the top 4. Top score = cosine similarity of the best chunk."; echo
+    echo "| # | Question | Kind | Retrieval hit | Top score | Verdict | Bot reason |"; echo "|---|---|---|---|---|---|---|"
+    printf '%s\n' "$RAG_DETAILS"
   fi
 } > $OUT
 echo "PASS=$PASS FAIL=$FAIL -> $OUT"
