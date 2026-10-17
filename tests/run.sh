@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end tests against the local n8n (http://localhost:5678). Every outcome is proven by reading Data Table
 # rows back through the n8n API, not just by looking at HTTP codes. Writes tests/RESULTS.md.
-# Needs: curl, jq, node, the N8N_LOCAL_API_KEY secret.  Takes about 13 minutes (the timeout cases wait on purpose and
-# all three evals pace one question every 8 s for the Gemini free tier).
+# Needs: curl, jq, node, the N8N_LOCAL_API_KEY secret.  Takes about 20 minutes (the timeout cases wait on purpose and
+# all four evals pace one question every 8 s for the Gemini free tier).
 set -u
 cd "$(dirname "$0")/.."
 BASE=http://localhost:5678
@@ -273,6 +273,69 @@ expect "approve: a queued \$650 refund that no longer fits (other refunds paid s
 post $AP "$(dec "apr-does-not-exist" approve)" "$AK"
 expect "approve: unknown approval id -> 404" "$([ "$CODE" = 404 ] && echo true)" "HTTP $CODE"
 
+echo "== voice-agent (server behind a phone assistant)"
+VU=$BASE/webhook/voice; VS="x-vapi-secret: $(cat data/voice-secret.txt)"
+VP="+61491570$(printf %03d $((RUN % 1000)))"; UNKNOWN="+61491570999"
+delrows() { local f; f=$(jq -rn --arg c "$2" --arg v "$3" '{type:"and",filters:[{columnName:$c,condition:"eq",value:$v}]}|tojson|@uri')
+  curl -s -X DELETE -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid "$1")/rows/delete?filter=$f" >/dev/null; }
+delrows voice_callers phone "$VP"; delrows voice_callers phone "$UNKNOWN"
+addrow voice_callers "$(jq -nc --arg p "$VP" --arg e "$CU" '{phone:$p,customer_email:$e}')"
+# tools <call-id> <phone> <tool-calls JSON>  -> Vapi "tool-calls" message
+tools() { jq -nc --arg c "$1" --arg p "$2" --argjson t "$3" '{message:{type:"tool-calls",call:{id:$c,customer:{number:$p}},toolCallList:$t}}'; }
+fn() { jq -nc --arg i "$1" --arg n "$2" --argjson a "$3" '{id:$i,type:"function",function:{name:$n,arguments:$a}}'; }
+res() { jq -r ".results[$1].result" <<<"$BODY"; }
+vaudit() { rows agent_audit message "phone call $1 from $2" | jq -r '.[0].reason'; }
+post $VU "$(tools v-$RUN-0 "$VP" "[$(fn a lookup_booking '{}')]")"
+c1=$CODE; post $VU "$(tools v-$RUN-0 "$VP" "[$(fn a lookup_booking '{}')]")" 'x-vapi-secret: wrong'
+expect "voice: without the server secret, or with a wrong one -> 403" "$([ "$c1" = 403 ] && [ "$CODE" = 403 ] && echo true)" "no secret HTTP $c1, wrong secret HTTP $CODE"
+post $VU "$(tools v-$RUN-1 "$VP" "[$(fn t1 lookup_booking '{}')]")" "$VS"
+expect "voice: lookup returns only the bookings of the customer this phone number belongs to, in Vapi's results format" "$([ "$CODE" = 200 ] && [ "$(jq -r '.results[0].toolCallId' <<<"$BODY")" = t1 ] && res 0 | jq -e --arg a $B1 --arg b $B2 --arg c $B3 '(map(.booking_id)|index($a)!=null and index($b)!=null and index($c)==null)' >/dev/null && echo true)" "HTTP $CODE result=$(res 0)"
+D21=$(day 21 weekday)
+post $VU "$(tools v-$RUN-2 "$VP" "[$(fn t2 reschedule_booking "$(jq -nc --arg b $B1 --arg d $D21 '{booking_id:$b,new_date:$d}')")]")" "$VS"
+expect "voice: moving the caller's own booking runs the reschedule rules, saves the date and is audited" "$([ "$(bk $B1 | jq -r .install_date)" = "$D21" ] && grep -q "Done" <<<"$(res 0)" && [ "$(vaudit v-$RUN-2 "$VP")" = "reschedule_booking:rescheduled" ] && echo true)" "result=$(res 0); booking install_date=$(bk $B1 | jq -r .install_date); audit reason=$(vaudit v-$RUN-2 "$VP")"
+b3=$(bk $B3 | jq -r .install_date)
+post $VU "$(tools v-$RUN-3 "$VP" "[$(fn t3 reschedule_booking "$(jq -nc --arg b $B3 --arg d $D21 '{booking_id:$b,new_date:$d}')")]")" "$VS"
+expect "voice: moving another customer's booking -> refused, that booking untouched" "$([ "$(bk $B3 | jq -r .install_date)" = "$b3" ] && [ "$(vaudit v-$RUN-3 "$VP")" = "reschedule_booking:not_your_booking" ] && echo true)" "result=$(res 0); other booking install_date $b3 -> $(bk $B3 | jq -r .install_date)"
+post $VU "$(tools v-$RUN-4 "$VP" "[$(fn t4 reschedule_booking "$(jq -nc --arg b $B1 --arg d "$(sat)" '{booking_id:$b,new_date:$d}')")]")" "$VS"
+expect "voice: moving to a Saturday -> refused by the same rule as the chat agent, date unchanged" "$([ "$(bk $B1 | jq -r .install_date)" = "$D21" ] && [ "$(vaudit v-$RUN-4 "$VP")" = "reschedule_booking:weekend" ] && echo true)" "result=$(res 0); install_date=$(bk $B1 | jq -r .install_date)"
+post $VU "$(tools v-$RUN-5 "$UNKNOWN" "[$(fn t5 reschedule_booking "$(jq -nc --arg b $B1 --arg d "$(day 30 weekday)" '{booking_id:$b,new_date:$d}')")]")" "$VS"
+expect "voice: a number linked to no account cannot change a booking, even naming a real booking id" "$([ "$(bk $B1 | jq -r .install_date)" = "$D21" ] && [ "$(vaudit v-$RUN-5 "$UNKNOWN")" = "reschedule_booking:unknown_caller" ] && echo true)" "result=$(res 0); install_date=$(bk $B1 | jq -r .install_date)"
+D28=$(day 28 weekday)
+post $VU "$(tools v-$RUN-6 "$VP" "[$(fn t6a reschedule_booking "$(jq -nc --arg b $B1 --arg d $D28 '{booking_id:$b,new_date:$d}')"),$(fn t6b request_callback '{"reason":"also wants a battery quote"}')]")" "$VS"
+expect "voice: two changes in one message -> the first runs, the second is refused (one change per request)" "$([ "$(bk $B1 | jq -r .install_date)" = "$D28" ] && grep -q "only one change" <<<"$(res 1)" && [ "$(count voice_callbacks call_id v-$RUN-6)" = 0 ] && echo true)" "results=$(jq -c '[.results[].result]' <<<"$BODY"); call backs for this call=$(count voice_callbacks call_id v-$RUN-6)"
+post $VU "$(tools v-$RUN-7 "$VP" "[$(fn t7 issue_refund '{"amount":500}')]")" "$VS"
+expect "voice: a tool the assistant is not given (issue_refund) -> refused" "$([ "$(vaudit v-$RUN-7 "$VP")" = "issue_refund:tool_not_allowed" ] && echo true)" "result=$(res 0)"
+post $VU "$(tools v-$RUN-8 "$VP" "[$(fn t8 request_callback '"{\"reason\":\"wants a battery quote\"}"')]")" "$VS"
+cb=$(rows voice_callbacks call_id v-$RUN-8)
+expect "voice: call back booked during the call (arguments sent as a JSON string also work)" "$([ "$(jq 'length' <<<"$cb")" = 1 ] && [ "$(jq -r '.[0].reason' <<<"$cb")" = "wants a battery quote" ] && [ "$(jq -r '.[0].customer_email' <<<"$cb")" = "$CU" ] && echo true)" "result=$(res 0); call back row $(jq -c '.[0]|{reason,source,status}' <<<"$cb")"
+post $VU '{"message":{"type":"status-update","status":"in-progress"}}' "$VS"
+expect "voice: other Vapi messages are acknowledged and ignored" "$([ "$CODE" = 200 ] && [ "$(jq -r .status <<<"$BODY")" = ignored ] && echo true)" "HTTP $CODE $BODY"
+# report <call-id> <transcript> [ended-reason]  -> Vapi "end-of-call-report" message, 3 min 10 s long, cost $0.12
+report() { jq -nc --arg c "$1" --arg p "$VP" --arg t "$2" --arg e "${3:-customer-ended-call}" '{message:{type:"end-of-call-report",endedReason:$e,cost:0.12,startedAt:"2026-10-17T02:00:00Z",endedAt:"2026-10-17T02:03:10Z",call:{id:$c,customer:{number:$p}},artifact:{transcript:$t}}}'; }
+post $VU '{"message":{"type":"end-of-call-report","artifact":{"transcript":"x"}}}' "$VS"
+expect "voice: end-of-call report without a call id -> 400" "$([ "$CODE" = 400 ] && echo true)" "HTTP $CODE reasons=$(jq -c .reasons <<<"$BODY")"
+if [ -n "$GEM" ]; then
+  post $VU "$(report r-$RUN-1 $'AI: Thanks for calling Acme Solar.\nUser: The installers left packaging all over my driveway and nobody answers my emails. I want someone to call me today.\nAI: I am sorry, I will pass that on.')" "$VS"
+  call=$(rows voice_calls call_id r-$RUN-1)
+  expect "voice: REAL Gemini classifies a complaint from the transcript; call saved with its length and cost, call back booked" "$([ "$(jq -r .follow_up <<<"$BODY")" = true ] && [ "$(jq -r '.[0].duration_s' <<<"$call")" = 190 ] && [ "$(jq -r '.[0].cost' <<<"$call")" = 0.12 ] && [ "$(count voice_callbacks call_id r-$RUN-1)" = 1 ] && echo true)" "HTTP $CODE in ${TIME}s $(jq -c '{outcome,follow_up,reason}' <<<"$BODY"); voice_calls $(jq -c '.[0]|{duration_s,cost,customer_email,ai_status}' <<<"$call"); call backs=$(count voice_callbacks call_id r-$RUN-1)"
+  post $VU "$(report r-$RUN-1 'resent')" "$VS"
+  expect "voice: the same report sent again -> duplicate, nothing stored twice" "$([ "$(jq -r .status <<<"$BODY")" = duplicate ] && [ "$(count voice_calls call_id r-$RUN-1)" = 1 ] && [ "$(count voice_callbacks call_id r-$RUN-1)" = 1 ] && echo true)" "status=$(jq -r .status <<<"$BODY"); voice_calls rows=$(count voice_calls call_id r-$RUN-1), call backs=$(count voice_callbacks call_id r-$RUN-1)"
+fi
+node scripts/stub-variant.mjs create voice-agent "Classify Call" >/dev/null
+VSU=$BASE/webhook/voice-stub
+vstub() { post $VSU "$(report "$1" "$2" "${4:-}")" "$VS" "x-stub-llm: $3"; }
+vcase() { # vcase <name> <call-id> <stub> <ended-reason> <expected follow_up> <expected call backs> [expected outcome]
+  vstub "$2" "a transcript" "$3" "$4"
+  expect "$1" "$([ "$(jq -r .follow_up <<<"$BODY")" = "$5" ] && [ "$(count voice_callbacks call_id "$2")" = "$6" ] && [ "$(count voice_calls call_id "$2")" = 1 ] && { [ -z "${7:-}" ] || [ "$(jq -r .outcome <<<"$BODY")" = "$7" ]; } && echo true)" "HTTP $CODE $(jq -c '{outcome,follow_up,reason}' <<<"$BODY"); call backs=$(count voice_callbacks call_id "$2")"
+}
+vcase "voice (AI stubbed): AI outage -> call still saved, a person calls back" s-$RUN-1 error customer-ended-call true 1 unclassified
+vcase "voice (AI stubbed): AI says complaint but no follow-up -> a call back is booked anyway" s-$RUN-2 '{"outcome":"complaint","follow_up":false,"follow_up_reason":null,"summary":"Unhappy."}' customer-ended-call true 1 complaint
+vcase "voice (AI stubbed): call ended on a system error -> call back, even when the AI saw nothing to do" s-$RUN-3 '{"outcome":"info_only","follow_up":false,"follow_up_reason":null,"summary":"Cut off."}' pipeline-error-provider-fault true 1
+vcase "voice (AI stubbed): wrong number -> saved, no call back" s-$RUN-4 '{"outcome":"spam_or_wrong_number","follow_up":false,"follow_up_reason":null,"summary":"Wrong number."}' customer-ended-call false 0 spam_or_wrong_number
+vcase "voice (AI stubbed): an outcome outside the list -> treated as unusable, call back" s-$RUN-5 '{"outcome":"refund_issued","follow_up":false,"follow_up_reason":null,"summary":"x"}' customer-ended-call true 1 unclassified
+node scripts/stub-variant.mjs delete voice-agent "Classify Call" >/dev/null
+delrows voice_callers phone "$VP"
+
 echo "== error-handler"
 curl -s "$BASE/webhook/error-demo" >/dev/null
 got=0; for i in $(seq 1 15); do got=$(rows workflow_errors workflow_name error-demo | jq 'length'); [ "$got" -ge 1 ] && break; sleep 1; done
@@ -324,6 +387,58 @@ else
   expect "agent eval: runs the 20 messages and writes a row to agent_eval_scores" "$([ "$ga" -eq $((gb+1)) ] && [ "$(jq -r .total <<<"$glast")" = 20 ] && echo true)" "${EV_RETRY}agent_eval_scores rows $gb -> $ga; $glast; AI key present: NO"
 fi
 
+echo "== voice eval (14 call transcripts)"
+run_eval voice-eval voice_eval_scores; vb=$EV_BEFORE; va=$EV_AFTER; vlast=$EV_LAST
+if [ -n "$GEM" ]; then
+  expect "voice eval: 14 transcripts against the REAL classifier, none lost to an outage, 0 missed call backs, row written to voice_eval_scores" "$([ "$va" -eq $((vb+1)) ] && [ "$(jq -r .total <<<"$vlast")" = 14 ] && [ "$(jq -r .ai_unavailable <<<"$vlast")" = 0 ] && [ "$(jq -r .missed_call_backs <<<"$vlast")" = 0 ] && echo true)" "${EV_RETRY}voice_eval_scores rows $vb -> $va; $vlast"
+  VOICE_DETAILS=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid voice_eval_scores)/rows" | jq -r '.data|last|.details|fromjson|.[]|"| \(.n) | \(.first_line|gsub("\\|";"/")) | \(.expected) | \(.outcome // "") | \(if .follow_up then "yes" else "no" end) | \(.verdict) |"')
+else
+  expect "voice eval: runs the 14 transcripts and writes a row to voice_eval_scores" "$([ "$va" -eq $((vb+1)) ] && [ "$(jq -r .total <<<"$vlast")" = 14 ] && echo true)" "voice_eval_scores rows $vb -> $va; $vlast; AI key present: NO"
+fi
+
+echo "== ops: uptime checks, alerts and the dashboard"
+# checks_run: runs ops-uptime once and waits for its 7 check rows -> OPS_RUN (execution id), OPS_ROWS (its rows)
+checks_run() {
+  OPS_RUN=$(node scripts/run-manual.mjs ops-uptime "Run Checks" | sed -n 's/.*"executionId":"\([0-9]*\)".*/\1/p')
+  for i in $(seq 1 30); do OPS_ROWS=$(rows ops_checks run_id "$OPS_RUN"); [ "$(jq length <<<"$OPS_ROWS")" -ge 7 ] && break; sleep 1; done
+  sleep 2 # the alert rows are written beside the check rows
+}
+alerts_for() { rows ops_alerts check "$1" | jq -c "[.[]|select(.status==\"$2\")]"; }
+wfapi() { curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/workflows/$(jq -r --arg n "$2" '.[$n]' data/ids.json)/$1"; }
+checks_run
+expect "ops: one run checks all 7 demos, every one answers as expected (no AI call made)" "$([ "$(jq length <<<"$OPS_ROWS")" = 7 ] && [ "$(jq '[.[]|select(.ok=="true")]|length' <<<"$OPS_ROWS")" = 7 ] && echo true)" "run $OPS_RUN: $(jq -r '[.[]|"\(.check) \(.status) in \(.ms) ms"]|join(", ")' <<<"$OPS_ROWS")"
+open_before=$(alerts_for ai-lead-qualify open | jq length)
+d=$(wfapi deactivate ai-lead-qualify); checks_run; r1=$(jq -c '.[]|select(.check=="ai-lead-qualify")|{status,ok,error}' <<<"$OPS_ROWS"); o1=$(alerts_for ai-lead-qualify open | jq length)
+expect "ops: a demo taken offline fails its check, but one failure opens no alert" "$([ "$d" = 200 ] && [ "$(jq -r .ok <<<"$r1")" = false ] && [ "$o1" = "$open_before" ] && echo true)" "deactivate HTTP $d; check row $r1; open alerts $open_before -> $o1"
+checks_run; o2=$(alerts_for ai-lead-qualify open); r2=$(jq -c '.[]|select(.check=="ai-lead-qualify")|{status,ok}' <<<"$OPS_ROWS")
+expect "ops: the second failure in a row opens an alert" "$([ "$(jq length <<<"$o2")" = 1 ] && echo true)" "check row $r2; open alert $(jq -c '.[0]|{alert_id,opened_at,last_error}' <<<"$o2")"
+d=$(wfapi activate ai-lead-qualify); checks_run; aid=$(jq -r '.[0].alert_id' <<<"$o2"); closed=$(rows ops_alerts alert_id "$aid" | jq -c '.[0]|{status,opened_at,closed_at}')
+expect "ops: the demo back online passes and the alert closes" "$([ "$d" = 200 ] && [ "$(jq -r .status <<<"$closed")" = closed ] && [ "$(jq -r '.[]|select(.check=="ai-lead-qualify")|.ok' <<<"$OPS_ROWS")" = true ] && echo true)" "activate HTTP $d; alert $closed"
+
+DPW=$(cat data/dashboard-password.txt); WRONG_PW="not-$RUN"
+c1=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/webhook/ops"); c2=$(curl -s -o /dev/null -w '%{http_code}' -u "ops:$WRONG_PW" "$BASE/webhook/ops")
+expect "dashboard: no login or a wrong password is refused" "$([ "$c1" = 401 ] && [ "$c2" = 401 ] && echo true)" "no login HTTP $c1, wrong password HTTP $c2"
+t0=$(date +%s); DASH=$(curl -s -m 120 -u "ops:$DPW" "$BASE/webhook/ops?format=json"); dt=$(( $(date +%s) - t0 ))
+since=$(( ($(date +%s) - 86400) * 1000 ))
+f=$(jq -rn --argjson s "$since" '{type:"and",filters:[{columnName:"check",condition:"eq",value:"ai-lead-qualify"},{columnName:"checked_ms",condition:"gt",value:$s}]}|tojson|@uri')
+own=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid ops_checks)/rows?limit=250&filter=$f" | jq -c '{n:(.data|length), ok:([.data[]|select(.ok=="true")]|length)}')
+own_pct=$(jq -r '((.ok / .n) * 10000 | round) / 100' <<<"$own"); dash_pct=$(jq -r '.uptime[]|select(.check=="ai-lead-qualify")|.uptime_24h' <<<"$DASH")
+expect "dashboard: 24-hour uptime matches a separate count of the check rows" "$([ -n "$dash_pct" ] && [ "$dash_pct" = "$own_pct" ] && [ "$(jq -r '.uptime[]|select(.check=="ai-lead-qualify")|.checks_24h' <<<"$DASH")" = "$(jq -r .n <<<"$own")" ] && echo true)" "ai-lead-qualify: dashboard $dash_pct% of $(jq -r '.uptime[]|select(.check=="ai-lead-qualify")|.checks_24h' <<<"$DASH") checks; separate count $(jq -r '"\(.ok) of \(.n)"' <<<"$own") = $own_pct%; answered in ${dt}s"
+expect "dashboard: lists the alert opened and closed above" "$(jq --arg a "$aid" '[.alerts.recent_closed[]|select(.alert_id==$a)]|length==1' <<<"$DASH")" "recent closed alerts: $(jq -c '[.alerts.recent_closed[]|.alert_id]' <<<"$DASH")"
+# Separate count of the voice agent's Gemini calls in the last 24 hours, read from the same execution log.
+VID=$(jq -r '.["voice-agent"]' data/ids.json); cut=$(date -u -v-24H +%Y-%m-%dT%H:%M:%S)
+own_v=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/executions?workflowId=$VID&includeData=true&limit=250" | jq --arg c "$cut" '[.data[]|select(.startedAt[0:19] > $c)|.data.resultData.runData["Gemini Chat Model"] // []|.[]]|length')
+dash_v=$(jq '.ai.by_workflow[]|select(.workflow=="voice-agent")|.calls' <<<"$DASH")
+usd_ok=$(jq '.ai | ((((.input_tokens * 0.30 + .output_tokens * 2.50) / 1e6) * 10000 | round) / 10000) as $c | ($c - .paid_tier_usd | fabs) < 0.0002' <<<"$DASH")
+if [ -n "$GEM" ]; then
+  expect "dashboard: Gemini calls and tokens counted from the execution log, priced at paid-tier rates" "$([ "$dash_v" = "$own_v" ] && [ "$(jq '.ai.calls' <<<"$DASH")" -ge 74 ] && [ "$(jq '.ai.output_tokens' <<<"$DASH")" -gt 0 ] && [ "$usd_ok" = true ] && echo true)" "voice-agent: dashboard $dash_v calls, separate count $own_v; all AI workflows: $(jq -r '.ai|"\(.calls) calls, \(.input_tokens) input + \(.output_tokens) output tokens = $\(.paid_tier_usd) at paid-tier prices (actual $\(.actual_usd), free tier)"' <<<"$DASH"); at least 74 expected from this run's evals"
+else
+  expect "dashboard: Gemini calls counted from the execution log" "$([ "$dash_v" = "$own_v" ] && echo true)" "voice-agent: dashboard $dash_v calls, separate count $own_v; AI key present: NO"
+fi
+PAGE=$(curl -s -u "ops:$DPW" -D "$TMPDIR/ops-headers" "$BASE/webhook/ops")
+ctype=$(grep -i '^content-type' "$TMPDIR/ops-headers" | tr -d '\r'); ntab=$(grep -o '<table>' <<<"$PAGE" | wc -l | tr -d ' ')
+expect "dashboard: the web page loads behind the login" "$(grep -qi 'text/html' <<<"$ctype" && grep -q 'Automation health' <<<"$PAGE" && [ "$ntab" = 5 ] && echo true)" "$ctype; $ntab tables; $(grep -o '[0-9]* of [0-9]* up' <<<"$PAGE")"
+
 {
   echo "# Test results"
   echo
@@ -353,6 +468,11 @@ fi
     echo "Dates in the messages are filled in at run time, relative to that day."; echo
     echo "| # | Message | Kind | Allowed outcome | Decision | Reason | Verdict |"; echo "|---|---|---|---|---|---|---|"
     printf '%s\n' "$AGENT_DETAILS"
+  fi
+  if [ -n "${VOICE_DETAILS:-}" ]; then
+    echo; echo "## Voice eval calls (latest run, real Gemini)"; echo
+    echo "| # | Caller's first words | Expected | Outcome | Call back booked | Verdict |"; echo "|---|---|---|---|---|---|"
+    printf '%s\n' "$VOICE_DETAILS"
   fi
 } > $OUT
 echo "PASS=$PASS FAIL=$FAIL -> $OUT"

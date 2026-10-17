@@ -1,0 +1,471 @@
+{
+  "name": "ops-dashboard",
+  "nodes": [
+    {
+      "name": "Dashboard",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "ff7d8015-b10b-ab07-2c51-33870517bb3b",
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "ops",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "basicAuth"
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "__DASH_CRED_ID__",
+          "name": "Dashboard login"
+        }
+      },
+      "id": "e906f854-0634-0ba3-6fc2-ad4d9cb8a0af",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "List Workflows",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "http://localhost:5678/api/v1/workflows?limit=250",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__N8N_API_CRED_ID__",
+          "name": "n8n API (local)"
+        }
+      },
+      "id": "3de51745-510b-282b-e983-a593e504801a",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Recent Runs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "http://localhost:5678/api/v1/executions?limit=250",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__N8N_API_CRED_ID__",
+          "name": "n8n API (local)"
+        }
+      },
+      "id": "c23587a7-a881-36af-b61f-fc3af444db7d",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "AI Workflow Ids",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst all = $('List Workflows').first().json.body.data || [];\nreturn [\"ai-lead-qualify\",\"support-bot-with-fallback\",\"rag-ask\",\"guarded-agent\",\"voice-agent\"].map((name) => all.find((x) => x.name === name)).filter(Boolean).map((x) => ({ json: { id: x.id, name: x.name } }));"
+      },
+      "id": "01e55964-7f7e-db4c-03c0-bb945445f6fb",
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "name": "AI Runs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "=http://localhost:5678/api/v1/executions?workflowId={{ $json.id }}&includeData=true&limit=250",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__N8N_API_CRED_ID__",
+          "name": "n8n API (local)"
+        }
+      },
+      "id": "6d85d075-929a-602c-a6c4-cf2226048989",
+      "position": [
+        1040,
+        300
+      ]
+    },
+    {
+      "name": "Checks",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "ops_checks"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "checked_ms",
+              "condition": "gt",
+              "keyValue": "={{ $now.toMillis() - 7 * 86400000 }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "1dda8e45-b1cb-388d-f58c-3d1da189c38b",
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "name": "Alerts",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "ops_alerts"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true,
+      "id": "99881ad0-0afe-4952-1297-4a899e17859f",
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "name": "Calls",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "voice_calls"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true,
+      "id": "b16466dd-a64f-60dd-3992-00e0bb074e57",
+      "position": [
+        1820,
+        300
+      ]
+    },
+    {
+      "name": "Open Call Backs",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "voice_callbacks"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "status",
+              "condition": "eq",
+              "keyValue": "open"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "executeOnce": true,
+      "id": "a60f2a77-981e-834b-39d5-53d4da67edb8",
+      "position": [
+        2080,
+        300
+      ]
+    },
+    {
+      "name": "Build",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst IN = 0.30, OUT = 2.50; // USD per 1M tokens, paid tier\nconst now = $now.toMillis(), DAY = 86400000;\nconst rows = (n) => $(n).all().map((i) => i.json);\nconst pct = (a, b) => (b ? Math.round((a / b) * 10000) / 100 : null);\nconst q = (xs, p) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };\n// Uptime\nconst checks = rows('Checks').filter((r) => r.check);\nconst names = [...new Set(checks.map((r) => r.check))].sort();\nconst uptime = names.map((check) => {\n  const all = checks.filter((r) => r.check === check), day = all.filter((r) => r.checked_ms > now - DAY);\n  const last = all.sort((a, b) => b.checked_ms - a.checked_ms)[0];\n  return { check, up: last.ok === 'true', last_checked: last.checked_at, last_error: last.error || '', uptime_24h: pct(day.filter((r) => r.ok === 'true').length, day.length),\n    uptime_7d: pct(all.filter((r) => r.ok === 'true').length, all.length), checks_24h: day.length, checks_7d: all.length,\n    p50_ms: q(day.map((r) => r.ms), 0.5), p95_ms: q(day.map((r) => r.ms), 0.95) };\n});\nconst alerts = rows('Alerts').filter((a) => a.alert_id);\n// Workflow runs (n8n's execution log, newest 250)\nconst wfName = Object.fromEntries(($('List Workflows').first().json.body.data || []).map((x) => [x.id, x.name]));\nconst runs = $('Recent Runs').first().json.body.data || [];\nconst byWf = {};\nfor (const e of runs) {\n  const n = wfName[e.workflowId] || e.workflowId; const b = (byWf[n] ||= { workflow: n, runs: 0, errors: 0, last_error_at: null });\n  b.runs++; if (e.status === 'error' || e.status === 'crashed') { b.errors++; if (!b.last_error_at || e.startedAt > b.last_error_at) b.last_error_at = e.startedAt; }\n}\nconst runTable = Object.values(byWf).sort((a, b) => b.runs - a.runs).map((b) => ({ ...b, error_rate: pct(b.errors, b.runs) }));\n// Gemini tokens, last 24 hours: every run of every model node, retries included\nconst ai = $('AI Runs').all().map((item, i) => {\n  const name = $('AI Workflow Ids').all()[i].json.name; let calls = 0, inT = 0, outT = 0;\n  for (const e of (item.json.body && item.json.body.data) || []) {\n    if (Date.parse(e.startedAt) < now - DAY) continue;\n    const rd = (e.data && e.data.resultData && e.data.resultData.runData) || {};\n    for (const [node, list] of Object.entries(rd)) for (const run of list) {\n      const out = run.data && run.data.ai_languageModel; if (!out) continue;\n      calls++; const u = (out[0] && out[0][0] && out[0][0].json && (out[0][0].json.tokenUsage || out[0][0].json.tokenUsageEstimate)) || {};\n      inT += u.promptTokens || 0; outT += u.completionTokens || 0;\n    }\n  }\n  return { workflow: name, calls, input_tokens: inT, output_tokens: outT, paid_tier_usd: Math.round(((inT * IN + outT * OUT) / 1e6) * 10000) / 10000 };\n});\nconst sum = (xs, k) => xs.reduce((s, x) => s + (Number(x[k]) || 0), 0);\n// Phone calls, last 7 days (eval transcripts left out)\nconst calls = rows('Calls').filter((c) => c.call_id && !String(c.call_id).startsWith('eval-') && Date.parse(c.at) > now - 7 * DAY);\nconst phone = { calls: calls.length, minutes: Math.round(sum(calls, 'duration_s') / 6) / 10, vapi_usd: Math.round(sum(calls, 'cost') * 100) / 100,\n  call_backs_open: rows('Open Call Backs').filter((c) => c.call_id && !String(c.call_id).startsWith('eval-')).length };\nconst data = { generated_at: $now.toISO(), uptime, alerts: { open: alerts.filter((a) => a.status === 'open'), recent_closed: alerts.filter((a) => a.status === 'closed').sort((a, b) => (b.closed_at > a.closed_at ? 1 : -1)).slice(0, 5) },\n  runs: { window: 'newest ' + runs.length + ' runs', total: runs.length, errors: sum(runTable, 'errors'), by_workflow: runTable },\n  ai: { window: 'last 24 hours (newest 250 runs of each AI workflow)', calls: sum(ai, 'calls'), input_tokens: sum(ai, 'input_tokens'), output_tokens: sum(ai, 'output_tokens'),\n    paid_tier_usd: Math.round(sum(ai, 'paid_tier_usd') * 10000) / 10000, actual_usd: 0, by_workflow: ai }, phone };\n// Page\nconst esc = (s) => String(s ?? '').replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' })[c]);\nconst num = (v, suf = '') => (v === null || v === undefined ? '-' : esc(v) + suf);\nconst table = (head, body) => '<table><thead><tr>' + head.map((h) => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' + (body.join('') || '<tr><td colspan=\"' + head.length + '\">Nothing yet.</td></tr>') + '</tbody></table>';\nconst when = (iso) => (iso ? esc(DateTime.fromISO(iso).setZone('Australia/Brisbane').toFormat('h:mma ccc d LLL').replace('AM', 'am').replace('PM', 'pm')) : '-');\nconst down = uptime.filter((u) => !u.up).length;\nconst html = '<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Automation Health</title><style>'\n  // Styling follows toolstash design-vault linear.app.md: a surface ladder off the page background, hairline borders\n  // instead of shadows, display weight 560 at -0.022em; tiles differ by what they show (a status rail only where a\n  // state is reported). Compact: 14px padding, 12px gaps, 22px figures.\n  + ':root{--bg:#f3f4f6;--card:#fff;--head:#f8f9fa;--text:#16181d;--muted:#545b68;--line:rgba(0,0,0,.09);--ok:#127a3e;--bad:#b42318}'\n  + '@media (prefers-color-scheme:dark){:root{--bg:#0f1011;--card:#151618;--head:#18191b;--text:#e8eaee;--muted:#9aa1ad;--line:rgba(255,255,255,.08);--ok:#4cc38a;--bad:#ff6b5e}}'\n  + 'body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}main{max-width:1040px;margin:0 auto;padding:24px 16px}'\n  + 'h1{font-size:22px;font-weight:560;letter-spacing:-.022em;margin:0 0 4px}h2{font-size:15px;font-weight:560;margin:24px 0 8px}p{margin:0;color:var(--muted)}'\n  + '.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:16px}'\n  + '.tile{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}.tile b{display:block;font-size:22px;font-weight:560;letter-spacing:-.022em}.tile span{color:var(--muted);font-size:13px}'\n  + '.rail-ok{box-shadow:inset 3px 0 0 var(--ok)}.rail-bad{box-shadow:inset 3px 0 0 var(--bad)}'\n  + '.wrap{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:8px}table{border-collapse:collapse;width:100%;font-size:14px}'\n  + 'th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap}th{background:var(--head);color:var(--muted);font-weight:560}tr:last-child td{border-bottom:0}.ok{color:var(--ok);font-weight:560}.bad{color:var(--bad);font-weight:560}'\n  + '</style></head><body><main><h1>Automation health</h1><p>Updated ' + when(data.generated_at) + ' (Brisbane time). Demo data, synthetic customers.</p>'\n  + '<div class=\"tiles\"><div class=\"tile ' + (down ? 'rail-bad' : 'rail-ok') + '\"><b class=\"' + (down ? 'bad' : 'ok') + '\">' + (uptime.length - down) + ' of ' + uptime.length + ' up</b><span>workflows answering right now</span></div>'\n  + '<div class=\"tile' + (data.alerts.open.length ? ' rail-bad' : '') + '\"><b>' + data.alerts.open.length + '</b><span>open alerts</span></div>'\n  + '<div class=\"tile\"><b>' + data.ai.calls + '</b><span>Gemini calls, last 24 hours</span></div>'\n  + '<div class=\"tile\"><b>$' + data.ai.paid_tier_usd.toFixed(4) + '</b><span>what those calls cost at paid-tier prices (actual: $0, free tier)</span></div>'\n  + '<div class=\"tile\"><b>' + phone.calls + ' calls, $' + phone.vapi_usd.toFixed(2) + '</b><span>phone calls and their cost, last 7 days</span></div></div>'\n  + '<h2>Uptime</h2><div class=\"wrap\">' + table(['Workflow', 'Now', 'Last 24 h', 'Last 7 days', 'Median', '95th pct.', 'Last checked'], uptime.map((u) => '<tr><td>' + esc(u.check) + '</td><td class=\"' + (u.up ? 'ok\">Up' : 'bad\">Down') + '</td><td>' + num(u.uptime_24h, '%') + '</td><td>' + num(u.uptime_7d, '%') + '</td><td>' + num(u.p50_ms, ' ms') + '</td><td>' + num(u.p95_ms, ' ms') + '</td><td>' + when(u.last_checked) + '</td></tr>')) + '</div>'\n  + '<h2>Alerts</h2><div class=\"wrap\">' + table(['Workflow', 'Status', 'Opened', 'Closed', 'Error'], [...data.alerts.open, ...data.alerts.recent_closed].map((a) => '<tr><td>' + esc(a.check) + '</td><td class=\"' + (a.status === 'open' ? 'bad' : 'ok') + '\">' + (a.status === 'open' ? 'Open' : 'Closed') + '</td><td>' + when(a.opened_at) + '</td><td>' + when(a.closed_at) + '</td><td>' + esc(a.last_error) + '</td></tr>')) + '</div>'\n  + '<h2>Gemini use, last 24 hours</h2><div class=\"wrap\">' + table(['Workflow', 'Calls', 'Input tokens', 'Output tokens', 'At paid-tier prices'], ai.map((a) => '<tr><td>' + esc(a.workflow) + '</td><td>' + a.calls + '</td><td>' + a.input_tokens + '</td><td>' + a.output_tokens + '</td><td>$' + a.paid_tier_usd.toFixed(4) + '</td></tr>')) + '</div>'\n  + '<h2>Runs (' + esc(data.runs.window) + ')</h2><div class=\"wrap\">' + table(['Workflow', 'Runs', 'Errors', 'Error rate', 'Last error'], runTable.map((r) => '<tr><td>' + esc(r.workflow) + '</td><td>' + r.runs + '</td><td' + (r.errors ? ' class=\"bad\"' : '') + '>' + r.errors + '</td><td>' + num(r.error_rate, '%') + '</td><td>' + when(r.last_error_at) + '</td></tr>')) + '</div>'\n  + '<h2>Phone calls, last 7 days</h2><div class=\"wrap\">' + table(['Calls', 'Minutes', 'Cost (from Vapi)', 'Call backs waiting'], ['<tr><td>' + phone.calls + '</td><td>' + phone.minutes + '</td><td>$' + phone.vapi_usd.toFixed(2) + '</td><td>' + phone.call_backs_open + '</td></tr>']) + '</div>'\n  + '</main></body></html>';\nreturn [{ json: { data, html } }];"
+      },
+      "id": "f234edcf-6d53-8061-270a-cc20284ffa23",
+      "position": [
+        2340,
+        300
+      ]
+    },
+    {
+      "name": "JSON?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bd1cba50-0a57-d48c-2886-85253e7dfc86",
+              "leftValue": "={{ $('Dashboard').first().json.query.format === 'json' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9f40b84d-5835-7d97-44fa-2ce984d72193",
+      "position": [
+        2600,
+        300
+      ]
+    },
+    {
+      "name": "Respond JSON",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.data) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "9856551a-62e6-76ba-d545-e51777a6d6c9",
+      "position": [
+        2860,
+        200
+      ]
+    },
+    {
+      "name": "Respond Page",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "content-type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "4f6fb8ab-1e9c-0365-b590-17f17ccc7842",
+      "position": [
+        2860,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Dashboard": {
+      "main": [
+        [
+          {
+            "node": "List Workflows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Workflows": {
+      "main": [
+        [
+          {
+            "node": "Recent Runs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recent Runs": {
+      "main": [
+        [
+          {
+            "node": "AI Workflow Ids",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Workflow Ids": {
+      "main": [
+        [
+          {
+            "node": "AI Runs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Runs": {
+      "main": [
+        [
+          {
+            "node": "Checks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Checks": {
+      "main": [
+        [
+          {
+            "node": "Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alerts": {
+      "main": [
+        [
+          {
+            "node": "Calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calls": {
+      "main": [
+        [
+          {
+            "node": "Open Call Backs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open Call Backs": {
+      "main": [
+        [
+          {
+            "node": "Build",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build": {
+      "main": [
+        [
+          {
+            "node": "JSON?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JSON?": {
+      "main": [
+        [
+          {
+            "node": "Respond JSON",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__",
+    "timezone": "Australia/Brisbane"
+  }
+}
