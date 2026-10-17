@@ -1,0 +1,22 @@
+[
+ {"q":"What happens to my warranty if I sell my house?","answerable":true,"expect_docs":["warranty-terms"],"expect_any":["60 days","transfer"]},
+ {"q":"How much output are the panels guaranteed to keep after 25 years?","answerable":true,"expect_docs":["warranty-terms"],"expect_any":["87.4"]},
+ {"q":"Can I extend my inverter warranty, and what does it cost?","answerable":true,"expect_docs":["warranty-terms"],"expect_any":["349"]},
+ {"q":"Is hail damage covered by the warranty?","answerable":true,"expect_docs":["warranty-terms"],"expect_any":["35 mm","35mm"]},
+ {"q":"What time does the installation team arrive?","answerable":true,"expect_docs":["installation-guide"],"expect_any":["7am","7 am","7:00","7 and 8","7 to 8","7-8"]},
+ {"q":"Will my power be off while you install the system?","answerable":true,"expect_docs":["installation-guide"],"expect_any":["2 hours","two hours"]},
+ {"q":"Can you put panels on a roof that has asbestos in it?","answerable":true,"expect_docs":["installation-guide"],"expect_any":["cannot","can't","can not","not able","replaced"]},
+ {"q":"How long until my new meter is installed after the panels go in?","answerable":true,"expect_docs":["installation-guide"],"expect_any":["3 weeks","three weeks"]},
+ {"q":"Do you sell my personal information to anyone?","answerable":true,"expect_docs":["privacy-policy"],"expect_any":["never","do not sell","don't sell","does not sell"]},
+ {"q":"How long do you keep my customer records?","answerable":true,"expect_docs":["privacy-policy"],"expect_any":["7 years","seven years"]},
+ {"q":"How much is the 8.8 kW system?","answerable":true,"expect_docs":["price-sheet"],"expect_any":["6,990","6990"]},
+ {"q":"Is there a fee for paying by credit card?","answerable":true,"expect_docs":["price-sheet"],"expect_any":["1.2"]},
+ {"q":"Can I get my deposit back if I change my mind after signing?","answerable":true,"expect_docs":["price-sheet"],"expect_any":["10 business days","ten business days","cooling"]},
+ {"q":"How much does a switchboard upgrade cost?","answerable":true,"expect_docs":["price-sheet","installation-guide"],"expect_any":["650"]},
+ {"q":"How much does it cost to install an EV charger?","answerable":false,"kind":"near-miss"},
+ {"q":"What brand of solar panels do you use?","answerable":false,"kind":"near-miss"},
+ {"q":"How much is a 20 kW commercial system?","answerable":false,"kind":"near-miss"},
+ {"q":"How long is the warranty on the backup gateway?","answerable":false,"kind":"near-miss"},
+ {"q":"What is the capital of France?","answerable":false,"kind":"off-topic"},
+ {"q":"Can you recommend a good plumber near me?","answerable":false,"kind":"off-topic"}
+]

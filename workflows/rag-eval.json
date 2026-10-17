@@ -1,0 +1,167 @@
+{
+  "name": "rag-eval",
+  "nodes": [
+    {
+      "name": "Run Eval",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "parameters": {},
+      "id": "5a2b477c-57bf-18ec-007f-f03effca2292",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Test Set",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{\"q\":\"What happens to my warranty if I sell my house?\",\"answerable\":true,\"expect_docs\":[\"warranty-terms\"],\"expect_any\":[\"60 days\",\"transfer\"]},{\"q\":\"How much output are the panels guaranteed to keep after 25 years?\",\"answerable\":true,\"expect_docs\":[\"warranty-terms\"],\"expect_any\":[\"87.4\"]},{\"q\":\"Can I extend my inverter warranty, and what does it cost?\",\"answerable\":true,\"expect_docs\":[\"warranty-terms\"],\"expect_any\":[\"349\"]},{\"q\":\"Is hail damage covered by the warranty?\",\"answerable\":true,\"expect_docs\":[\"warranty-terms\"],\"expect_any\":[\"35 mm\",\"35mm\"]},{\"q\":\"What time does the installation team arrive?\",\"answerable\":true,\"expect_docs\":[\"installation-guide\"],\"expect_any\":[\"7am\",\"7 am\",\"7:00\",\"7 and 8\",\"7 to 8\",\"7-8\"]},{\"q\":\"Will my power be off while you install the system?\",\"answerable\":true,\"expect_docs\":[\"installation-guide\"],\"expect_any\":[\"2 hours\",\"two hours\"]},{\"q\":\"Can you put panels on a roof that has asbestos in it?\",\"answerable\":true,\"expect_docs\":[\"installation-guide\"],\"expect_any\":[\"cannot\",\"can't\",\"can not\",\"not able\",\"replaced\"]},{\"q\":\"How long until my new meter is installed after the panels go in?\",\"answerable\":true,\"expect_docs\":[\"installation-guide\"],\"expect_any\":[\"3 weeks\",\"three weeks\"]},{\"q\":\"Do you sell my personal information to anyone?\",\"answerable\":true,\"expect_docs\":[\"privacy-policy\"],\"expect_any\":[\"never\",\"do not sell\",\"don't sell\",\"does not sell\"]},{\"q\":\"How long do you keep my customer records?\",\"answerable\":true,\"expect_docs\":[\"privacy-policy\"],\"expect_any\":[\"7 years\",\"seven years\"]},{\"q\":\"How much is the 8.8 kW system?\",\"answerable\":true,\"expect_docs\":[\"price-sheet\"],\"expect_any\":[\"6,990\",\"6990\"]},{\"q\":\"Is there a fee for paying by credit card?\",\"answerable\":true,\"expect_docs\":[\"price-sheet\"],\"expect_any\":[\"1.2\"]},{\"q\":\"Can I get my deposit back if I change my mind after signing?\",\"answerable\":true,\"expect_docs\":[\"price-sheet\"],\"expect_any\":[\"10 business days\",\"ten business days\",\"cooling\"]},{\"q\":\"How much does a switchboard upgrade cost?\",\"answerable\":true,\"expect_docs\":[\"price-sheet\",\"installation-guide\"],\"expect_any\":[\"650\"]},{\"q\":\"How much does it cost to install an EV charger?\",\"answerable\":false,\"kind\":\"near-miss\"},{\"q\":\"What brand of solar panels do you use?\",\"answerable\":false,\"kind\":\"near-miss\"},{\"q\":\"How much is a 20 kW commercial system?\",\"answerable\":false,\"kind\":\"near-miss\"},{\"q\":\"How long is the warranty on the backup gateway?\",\"answerable\":false,\"kind\":\"near-miss\"},{\"q\":\"What is the capital of France?\",\"answerable\":false,\"kind\":\"off-topic\"},{\"q\":\"Can you recommend a good plumber near me?\",\"answerable\":false,\"kind\":\"off-topic\"}].map((t, i) => ({ json: { n: i + 1, ...t } }));"
+      },
+      "id": "40262041-01fb-89d8-f7ae-6e470d394d88",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Ask",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/rag/ask",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ question: $json.q }) }}",
+        "options": {
+          "timeout": 90000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 8000
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "ce538813-a027-f1a8-b3b6-1fd825492fa8",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst tests = $('Test Set').all().map((i) => i.json);\nconst res = $input.all().map((i) => i.json);\nlet hits = 0, correct = 0, refusedRight = 0, wrong = 0, missed = 0, aiDown = 0; const details = [];\ntests.forEach((t, i) => {\n  const r = (res[i] && res[i].body) || {};\n  const answered = r.answered === true;\n  if (['ai_unavailable', 'ai_output_unusable', 'retrieval_unavailable'].includes(r.reason)) aiDown++;\n  const retrievedDocs = (r.retrieved || []).map((c) => c.doc_id);\n  let verdict, hit = null;\n  if (t.answerable) {\n    hit = t.expect_docs.some((d) => retrievedDocs.includes(d)); if (hit) hits++;\n    const citedDocs = (r.citations || []).map((c) => c.chunk_id.split('#')[0]);\n    const fact = t.expect_any.some((k) => String(r.answer || '').toLowerCase().includes(k.toLowerCase()));\n    if (!answered) { missed++; verdict = 'missed (refused)'; }\n    else if (!citedDocs.some((d) => t.expect_docs.includes(d))) { wrong++; verdict = 'WRONG: cited the wrong document'; }\n    else if (!fact) { wrong++; verdict = 'WRONG: expected fact missing'; }\n    else { correct++; verdict = 'correct'; }\n  } else if (!answered) { refusedRight++; verdict = 'correct refusal'; }\n  else { wrong++; verdict = 'WRONG: answered an unanswerable question'; }\n  details.push({ n: t.n, q: t.q, kind: t.kind || 'answerable', verdict, reason: r.reason || null, retrieval_hit: hit, top_score: r.retrieved && r.retrieved[0] ? r.retrieved[0].score : null, answer: answered ? r.answer : null });\n});\nconst answerable = tests.filter((t) => t.answerable).length, unanswerable = tests.length - answerable;\nconst r3 = (x) => Math.round(x * 1000) / 1000;\nreturn [{ json: { run_at: new Date().toISOString(), total: tests.length, answerable, unanswerable,\n  retrieval_hit_rate: r3(hits / answerable), answer_accuracy: r3((correct + refusedRight) / tests.length),\n  correct_refusal_rate: r3(refusedRight / unanswerable), wrong_answers: wrong, missed_answers: missed, ai_unavailable: aiDown, details: JSON.stringify(details) } }];"
+      },
+      "id": "02aed15a-9c71-76e9-6639-35545911e351",
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "name": "Save Run",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "rag_eval_runs"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "run_at": "={{ $json.run_at }}",
+            "total": "={{ $json.total }}",
+            "answerable": "={{ $json.answerable }}",
+            "unanswerable": "={{ $json.unanswerable }}",
+            "retrieval_hit_rate": "={{ $json.retrieval_hit_rate }}",
+            "answer_accuracy": "={{ $json.answer_accuracy }}",
+            "correct_refusal_rate": "={{ $json.correct_refusal_rate }}",
+            "wrong_answers": "={{ $json.wrong_answers }}",
+            "missed_answers": "={{ $json.missed_answers }}",
+            "ai_unavailable": "={{ $json.ai_unavailable }}",
+            "details": "={{ $json.details }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "55285f91-a847-4c65-f239-16581c8b88e8",
+      "position": [
+        1040,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Run Eval": {
+      "main": [
+        [
+          {
+            "node": "Test Set",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Test Set": {
+      "main": [
+        [
+          {
+            "node": "Ask",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask": {
+      "main": [
+        [
+          {
+            "node": "Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score": {
+      "main": [
+        [
+          {
+            "node": "Save Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__"
+  }
+}

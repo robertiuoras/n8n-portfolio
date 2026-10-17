@@ -24,6 +24,9 @@ const tables = {
   handoffs: { question: S, reason: S, confidence: N, at: S },
   eval_runs: { run_at: S, total: N, answerable: N, unanswerable: N, accuracy: N, correct_refusal_rate: N, wrong_answers: N, missed_answers: N, ai_unavailable: N, details: S },
   workflow_errors: { workflow_name: S, node: S, message: S, execution_id: S, at: S },
+  rag_chunks: { chunk_id: S, doc_id: S, title: S, section: S, text: S, embedding: S, model: S, ingested_at: S },
+  rag_handoffs: { question: S, reason: S, confidence: N, top_score: N, at: S },
+  rag_eval_runs: { run_at: S, total: N, answerable: N, unanswerable: N, retrieval_hit_rate: N, answer_accuracy: N, correct_refusal_rate: N, wrong_answers: N, missed_answers: N, ai_unavailable: N, details: S },
 };
 const have = new Set((await api('GET', '/api/v1/data-tables?limit=250')).data.map((t) => t.name));
 for (const [name, cols] of Object.entries(tables)) {
@@ -42,7 +45,7 @@ if (!credId && gem) {
 }
 const wfs = (await api('GET', '/api/v1/workflows?limit=250')).data;
 const idOf = (name) => wfs.find((w) => w.name === name)?.id;
-const order = ['error-handler', 'mock-crm', 'error-demo', 'chatbot-to-crm', 'ai-lead-qualify', 'support-bot-with-fallback', 'support-bot-eval'];
+const order = ['error-handler', 'mock-crm', 'error-demo', 'chatbot-to-crm', 'ai-lead-qualify', 'support-bot-with-fallback', 'support-bot-eval', 'rag-ingest', 'rag-ask', 'rag-eval'];
 const ids = {};
 for (const name of order) {
   let txt = fs.readFileSync(path.join(root, 'workflows', name + '.json'), 'utf8');
@@ -56,7 +59,8 @@ for (const name of order) {
   else wf = await api('POST', '/api/v1/workflows', def);
   ids[name] = wf.id;
   let act = 'n/a (no trigger)';
-  if (name !== 'support-bot-eval') { try { await api('POST', `/api/v1/workflows/${wf.id}/activate`, {}); act = 'active'; } catch (e) { act = 'ACTIVATE FAILED: ' + e.message; } }
+  if (!name.endsWith('-eval')) { try { await api('POST', `/api/v1/workflows/${wf.id}/activate`, {}); act = 'active'; } catch (e) { act = 'ACTIVATE FAILED: ' + e.message; } }
   console.log(name.padEnd(28), wf.id, act);
 }
+fs.mkdirSync(path.join(root, 'data'), { recursive: true });
 fs.writeFileSync(path.join(root, 'data', 'ids.json'), JSON.stringify(ids, null, 2));

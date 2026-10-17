@@ -1,0 +1,539 @@
+{
+  "name": "rag-ask",
+  "nodes": [
+    {
+      "name": "Question",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "cee184cb-9fd3-9c04-6db0-60f209a36166",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rag/ask",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "beeb0ff5-954b-d7da-db52-516abe1b31e6",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst q = ($json.body || {}).question;\nconst errs = [];\nif (!q || typeof q !== 'string' || q.trim().length < 3) errs.push('question is required');\nelse if (q.length > 500) errs.push('question must be 500 characters or fewer');\nreturn { json: { valid: errs.length === 0, errors: errs, question: typeof q === 'string' ? q.trim() : '' } };"
+      },
+      "id": "faa31c88-b043-50f2-883e-bd7c715eb2fc",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "236392a5-44d5-34b5-993b-5068f8f1d35d",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "322fb612-43f9-bdb2-9195-59dbd84d7310",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answered: false, reasons: $('Validate').first().json.errors }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "0a1597bd-03ee-654d-27f6-cf9cda853ff0",
+      "position": [
+        520,
+        520
+      ]
+    },
+    {
+      "name": "Embed Question",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "__GEMINI_CRED_ID__",
+          "name": "Gemini free tier"
+        }
+      },
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googlePalmApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content: { parts: [{ text: $json.question }] }, taskType: 'RETRIEVAL_QUERY', outputDimensionality: 768 }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "88904d75-5052-5886-bcab-1498b3186042",
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "name": "Load Chunks",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "rag_chunks"
+        },
+        "returnAll": true
+      },
+      "id": "cd22f48b-acc5-ac0d-387b-1d347f19e0d5",
+      "position": [
+        1040,
+        300
+      ]
+    },
+    {
+      "name": "Retrieve",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst question = $('Validate').first().json.question;\nconst e = $('Embed Question').first().json;\nconst qv = e.body && e.body.embedding && e.body.embedding.values;\nconst none = (reason) => [{ json: { ok: false, reason, question, top: [], top_score: 0 } }];\nif (e.statusCode !== 200 || !Array.isArray(qv)) return none('retrieval_unavailable');\nconst rows = $input.all().map((i) => i.json).filter((r) => r.chunk_id && r.embedding);\nif (!rows.length) return none('no_documents');\nconst dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };\nconst qn = Math.sqrt(dot(qv, qv));\nconst top = rows.map((r) => { const v = JSON.parse(r.embedding); return { chunk_id: r.chunk_id, doc_id: r.doc_id, title: r.title, section: r.section, text: r.text, score: dot(qv, v) / (qn * Math.sqrt(dot(v, v))) }; })\n  .sort((a, b) => b.score - a.score).slice(0, 4);\nconst top_score = Math.round(top[0].score * 1000) / 1000;\nconst slim = top.map(({ text, ...c }) => ({ ...c, score: Math.round(c.score * 1000) / 1000 }));\nif (top_score < 0) return [{ json: { ok: false, reason: 'nothing_relevant', question, top: slim, top_score } }];\nreturn [{ json: { ok: true, reason: '', question, top: slim, top_score, context: top.map((c) => '[' + c.chunk_id + '] ' + c.text).join('\\n\\n') } }];"
+      },
+      "id": "94b98802-9cb4-2ac0-b549-8bbde39bc0db",
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "name": "Found Extracts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0de4e047-0e83-815e-c77e-df9012dcd9d5",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "45baacba-59df-1bb1-567a-5882361fb103",
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "name": "Answer From Docs",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "promptType": "define",
+        "text": "=Customer question: {{ $json.question }}\n\nDocument extracts:\n{{ $json.context }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the support assistant for Acme Solar, a fictional home-solar installer. Answer ONLY from the document extracts in the user message. Each extract starts with its id in square brackets, for example [price-sheet#2]. If the extracts do not clearly contain the answer, set supported=false, confidence low, and leave cited_chunk_ids empty. Do not guess and do not use outside knowledge, even when the question is close to something the extracts cover. When supported, answer in one to three plain sentences, include the exact figures from the extracts, and list the ids of the extracts you used in cited_chunk_ids. confidence is 0 to 1."
+            }
+          ]
+        }
+      },
+      "id": "1fed98fe-6437-4118-f99c-05c64ac3861d",
+      "position": [
+        1820,
+        220
+      ]
+    },
+    {
+      "name": "Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash-lite",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "credentials": {
+        "googlePalmApi": {
+          "id": "__GEMINI_CRED_ID__",
+          "name": "Gemini free tier"
+        }
+      },
+      "id": "a090b74f-d4fa-fc37-598c-24cd9e385022",
+      "position": [
+        1780,
+        480
+      ]
+    },
+    {
+      "name": "Answer Fields",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n \"type\": \"object\",\n \"properties\": {\n  \"answer\": {\n   \"type\": \"string\"\n  },\n  \"supported\": {\n   \"type\": \"boolean\"\n  },\n  \"confidence\": {\n   \"type\": \"number\",\n   \"minimum\": 0,\n   \"maximum\": 1\n  },\n  \"cited_chunk_ids\": {\n   \"type\": \"array\",\n   \"items\": {\n    \"type\": \"string\"\n   }\n  }\n },\n \"required\": [\n  \"answer\",\n  \"supported\",\n  \"confidence\",\n  \"cited_chunk_ids\"\n ]\n}"
+      },
+      "id": "2d10f06d-6cde-3711-ea4e-4db1158fd0d8",
+      "position": [
+        1940,
+        480
+      ]
+    },
+    {
+      "name": "Decide",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst r = $('Retrieve').first().json;\nlet reason = r.reason || '', o = null;\nif (r.ok) {\n  o = $json.output;\n  const shape = o && typeof o === 'object' && typeof o.answer === 'string' && typeof o.supported === 'boolean' && typeof o.confidence === 'number' && Array.isArray(o.cited_chunk_ids);\n  const retrieved = r.top.map((c) => c.chunk_id);\n  if ($json.error) reason = 'ai_unavailable';\n  else if (!shape) reason = 'ai_output_unusable';\n  else if (!o.supported) reason = 'not_in_docs';\n  else if (o.confidence < 0.6) reason = 'low_confidence';\n  else if (o.cited_chunk_ids.length === 0 || !o.cited_chunk_ids.every((id) => retrieved.includes(id))) reason = 'citation_not_retrieved';\n}\nconst answered = reason === '';\nreturn { json: { answered, reason: answered ? 'answered' : reason, question: r.question,\n  answer: answered ? o.answer : \"I can't answer that reliably from our documents. I've passed your question to our team and they will reply by email.\",\n  confidence: o && typeof o.confidence === 'number' ? o.confidence : 0,\n  citations: answered ? r.top.filter((c) => o.cited_chunk_ids.includes(c.chunk_id)).map((c) => ({ chunk_id: c.chunk_id, title: c.title, section: c.section })) : [],\n  retrieved: r.top.map((c) => ({ chunk_id: c.chunk_id, doc_id: c.doc_id, score: c.score })), top_score: r.top_score } };"
+      },
+      "id": "987cd88a-ab00-51a5-4f56-8f612839c73f",
+      "position": [
+        2080,
+        300
+      ]
+    },
+    {
+      "name": "Answered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "36603a93-4a41-d689-27ae-b6eca29ec314",
+              "leftValue": "={{ $json.answered }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "990305b9-1993-3e53-20f3-797cb33380ad",
+      "position": [
+        2340,
+        300
+      ]
+    },
+    {
+      "name": "Respond Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answered: true, answer: $json.answer, citations: $json.citations, confidence: $json.confidence, retrieved: $json.retrieved }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "ca0f04f2-4cbd-bc94-450b-7d1a1d538f5c",
+      "position": [
+        2600,
+        220
+      ]
+    },
+    {
+      "name": "Create Handoff",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "rag_handoffs"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "question": "={{ $json.question }}",
+            "reason": "={{ $json.reason }}",
+            "confidence": "={{ $json.confidence }}",
+            "top_score": "={{ $json.top_score }}",
+            "at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "53ff2a20-677b-cc28-aabe-1dc7f3b55f10",
+      "position": [
+        2600,
+        420
+      ]
+    },
+    {
+      "name": "Respond Handoff",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answered: false, handoff: true, reason: $('Decide').first().json.reason, message: $('Decide').first().json.answer, retrieved: $('Decide').first().json.retrieved }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "96aad398-d453-84dd-e8d1-f2b1e20ea809",
+      "position": [
+        2860,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Answer From Docs",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer Fields": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Answer From Docs",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Question": {
+      "main": [
+        [
+          {
+            "node": "Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Embed Question",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Question": {
+      "main": [
+        [
+          {
+            "node": "Load Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Chunks": {
+      "main": [
+        [
+          {
+            "node": "Retrieve",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retrieve": {
+      "main": [
+        [
+          {
+            "node": "Found Extracts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Found Extracts?": {
+      "main": [
+        [
+          {
+            "node": "Answer From Docs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Decide",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer From Docs": {
+      "main": [
+        [
+          {
+            "node": "Decide",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide": {
+      "main": [
+        [
+          {
+            "node": "Answered?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answered?": {
+      "main": [
+        [
+          {
+            "node": "Respond Answer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Handoff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Handoff": {
+      "main": [
+        [
+          {
+            "node": "Respond Handoff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__"
+  }
+}

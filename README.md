@@ -1,6 +1,6 @@
 # n8n automation portfolio (Robert Iuoras)
 
-Four small automations built in n8n 2.42.5, each tested end to end. **These are my own demo builds using synthetic data. None of them is client work.** Everything runs on one laptop; the "CRM" is a stand-in (see below), so no third-party accounts are needed.
+Five small automations built in n8n 2.42.5, each tested end to end. **These are my own demo builds using synthetic data. None of them is client work.** Everything runs on one laptop; the "CRM" is a stand-in (see below), so no third-party accounts are needed.
 
 Test evidence: [tests/RESULTS.md](tests/RESULTS.md) (re-run any time with `bash tests/run.sh`). Canvas pictures: `screenshots/`. Importable workflow files: `workflows/`.
 
@@ -31,6 +31,14 @@ A tiny fake CRM API built as an n8n workflow (create/update a contact, look one 
 ## 4. error-handler
 ![canvas](screenshots/error-handler.png)
 **Problem it solves:** automations fail quietly. Any workflow pointing at this one as its Error Workflow gets its crash written to a `workflow_errors` table (workflow, step, message, run id, time). `error-demo` crashes on purpose to prove it.
+
+## 5. rag-docs: answers from real documents (rag-ingest, rag-ask, rag-eval)
+![canvas](screenshots/rag-ask.png)
+**Problem it solves:** a FAQ only goes so far. Real answers live in long documents (warranty terms, an installation guide, a privacy policy, a price sheet: four synthetic "Acme Solar" documents in `docs/`). The bot has to find the right passage, answer from it, show where the answer came from, and still say "I can't answer that reliably" when the documents do not cover the question.
+**How it behaves:** `rag-ingest` (POST a document as markdown) splits it at its headings, turns each piece into an embedding with Google's `gemini-embedding-2` (free tier) and stores text and vector in an n8n Data Table, so the index survives restarts. Re-sending a document replaces its old pieces, but only after every new piece was embedded: if the embeddings API fails, the stored copy is left as it was. ![ingest](screenshots/rag-ingest.png)
+`rag-ask` embeds the question, ranks every stored piece by similarity, and gives the best 4 to Gemini, which must answer only from them and name the pieces it used. The answer is refused and handed to a person (a row in `rag_handoffs`) when the AI says the extracts do not cover it, is under 0.6 confident, cites a piece that was not among the ones retrieved for this question, returns unusable output, or the AI or embeddings service is down. Answers come back with their citations (document and section).
+**Eval:** `rag-eval` (manual run) sends 20 questions (`tests/rag-eval.json`): 14 answerable across all four documents, 4 near-misses (on-topic but not in the documents, such as the price of an EV charger) and 2 off-topic. It records retrieval hit rate (was the right document in the top 4), answer accuracy (an answer counts only if it cites the expected document and contains the expected fact), correct refusals and wrong answers in `rag_eval_runs`. ![eval](screenshots/rag-eval.png)
+RAG_RESULTS_LINE
 
 ## Publishing safety
 Every push is scanned for secrets (gitleaks) and for a private list of client identifiers, across the whole history, by `scripts/public-gate.mjs` (pre-push hook and GitHub Actions). The scan done before publishing is in [tests/PUBLIC-SCAN.md](tests/PUBLIC-SCAN.md).
