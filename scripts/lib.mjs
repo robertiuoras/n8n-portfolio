@@ -44,6 +44,13 @@ export const dtGet = (name, table, filters) => ({
   name, type: 'n8n-nodes-base.dataTable', typeVersion: 1.1, alwaysOutputData: true,
   parameters: { resource: 'row', operation: 'get', dataTableId: tbl(table), matchType: 'allConditions', filters: eqs(filters), returnAll: true } });
 const cols = (v) => ({ mappingMode: 'defineBelow', value: v, matchingColumns: [], schema: [], attemptToConvertTypes: false, convertFieldsToString: false });
+// No filters = every row (the get operation allows that; delete does not).
+export const dtGetAll = (name, table) => ({
+  name, type: 'n8n-nodes-base.dataTable', typeVersion: 1.1, alwaysOutputData: true,
+  parameters: { resource: 'row', operation: 'get', dataTableId: tbl(table), returnAll: true } });
+export const dtDelete = (name, table, filters) => ({
+  name, type: 'n8n-nodes-base.dataTable', typeVersion: 1.1, alwaysOutputData: true, executeOnce: true,
+  parameters: { resource: 'row', operation: 'deleteRows', dataTableId: tbl(table), matchType: 'allConditions', filters: eqs(filters), options: {} } });
 export const dtInsert = (name, table, values) => ({
   name, type: 'n8n-nodes-base.dataTable', typeVersion: 1.1,
   parameters: { resource: 'row', operation: 'insert', dataTableId: tbl(table), columns: cols(values), options: {} } });
@@ -51,10 +58,12 @@ export const dtUpdate = (name, table, filters, values) => ({
   name, type: 'n8n-nodes-base.dataTable', typeVersion: 1.1,
   parameters: { resource: 'row', operation: 'update', dataTableId: tbl(table), matchType: 'allConditions', filters: eqs(filters), columns: cols(values), options: {} } });
 
-export const httpReq = (name, method, url, { headers, body, query, timeout = 10000, batch } = {}) => ({
+export const httpReq = (name, method, url, { headers, body, query, timeout = 10000, batch, cred } = {}) => ({
   name, type: 'n8n-nodes-base.httpRequest', typeVersion: 4.5, onError: 'continueRegularOutput',
+  ...(cred ? { credentials: { [cred]: GEMINI_CRED } } : {}),
   parameters: {
     method, url,
+    ...(cred ? { authentication: 'predefinedCredentialType', nodeCredentialType: cred } : {}),
     ...(query ? { sendQuery: true, queryParameters: { parameters: Object.entries(query).map(([n, value]) => ({ name: n, value })) } } : {}),
     ...(headers ? { sendHeaders: true, headerParameters: { parameters: Object.entries(headers).map(([n, value]) => ({ name: n, value })) } } : {}),
     ...(body ? { sendBody: true, specifyBody: 'json', jsonBody: body } : {}),
@@ -68,10 +77,17 @@ export const wait = (name, secondsExpr) => ({
 // a day and 5 a minute (one test run plus the 20-question eval used it up), while gemini-3.5-flash-lite allows 500 a day
 // and 15 a minute. gemini-2.5-flash answers 404 "no longer available to new users".
 export const LLM_MODEL = 'models/gemini-3.5-flash-lite';
+// Embeddings, read from the same quota API on 2026-10-17: gemini-embedding-2 (free tier: 100 requests a minute,
+// 1,000 a day, 30,000 tokens a minute). It has no batch endpoint on the free tier, so every chunk is one request.
+// 768 dimensions instead of the default keeps each stored vector small; the API returns it unit length.
+export const EMBED_MODEL = 'gemini-embedding-2';
+export const EMBED_DIMS = 768;
+export const EMBED_URL = `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:embedContent`;
+const GEMINI_CRED = { id: '__GEMINI_CRED_ID__', name: 'Gemini free tier' };
 export const geminiModel = (name) => ({
   name, type: '@n8n/n8n-nodes-langchain.lmChatGoogleGemini', typeVersion: 1,
   parameters: { modelName: LLM_MODEL, options: { temperature: 0 } },
-  credentials: { googlePalmApi: { id: '__GEMINI_CRED_ID__', name: 'Gemini free tier' } } });
+  credentials: { googlePalmApi: GEMINI_CRED } });
 export const parser = (name, schema) => ({
   name, type: '@n8n/n8n-nodes-langchain.outputParserStructured', typeVersion: 1.3,
   parameters: { schemaType: 'manual', inputSchema: JSON.stringify(schema, null, 1) } });
