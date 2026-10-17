@@ -44,6 +44,14 @@ export const dtGet = (name, table, filters) => ({
   name, type: 'n8n-nodes-base.dataTable', typeVersion: 1.1, alwaysOutputData: true,
   parameters: { resource: 'row', operation: 'get', dataTableId: tbl(table), matchType: 'allConditions', filters: eqs(filters), returnAll: true } });
 const cols = (v) => ({ mappingMode: 'defineBelow', value: v, matchingColumns: [], schema: [], attemptToConvertTypes: false, convertFieldsToString: false });
+// Filters other than "equals": [[column, condition, value], ...] with condition gt, gte, lt, lte, neq, like.
+const conds = (list) => ({ conditions: list.map(([keyName, condition, keyValue]) => ({ keyName, condition, keyValue })) });
+export const dtGetWhere = (name, table, list) => ({
+  name, type: 'n8n-nodes-base.dataTable', typeVersion: 1.1, alwaysOutputData: true, executeOnce: true,
+  parameters: { resource: 'row', operation: 'get', dataTableId: tbl(table), matchType: 'allConditions', filters: conds(list), returnAll: true } });
+export const dtDeleteWhere = (name, table, list) => ({
+  name, type: 'n8n-nodes-base.dataTable', typeVersion: 1.1, alwaysOutputData: true, executeOnce: true,
+  parameters: { resource: 'row', operation: 'deleteRows', dataTableId: tbl(table), matchType: 'allConditions', filters: conds(list), options: {} } });
 // No filters = every row (the get operation allows that; delete does not).
 export const dtGetAll = (name, table) => ({
   name, type: 'n8n-nodes-base.dataTable', typeVersion: 1.1, alwaysOutputData: true,

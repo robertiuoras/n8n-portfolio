@@ -1,0 +1,173 @@
+{
+  "name": "voice-eval",
+  "nodes": [
+    {
+      "name": "Run Eval",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "parameters": {},
+      "id": "a2725ce2-6026-3fad-4f1f-f37ed3f8ccaa",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Test Set",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: I need to move my installation to next Wednesday.\\nAI: Done, your installation is now booked for Wednesday the 4th.\\nUser: Great, thanks, that's all.\",\"outcome\":[\"changed_booking\"],\"follow_up\":false},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: When is my installation booked for?\\nAI: It's booked for Tuesday the 27th.\\nUser: Perfect, thank you.\",\"outcome\":[\"info_only\"],\"follow_up\":false},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: How long is the warranty on the panels?\\nAI: Panels have a 25-year product warranty and the workmanship is covered for 10 years.\\nUser: Okay, good to know. Bye.\",\"outcome\":[\"info_only\"],\"follow_up\":false},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: I'd like a quote to add a battery to my system. Can someone call me to talk it through?\\nAI: Of course, I've asked the team to call you back on this number.\\nUser: Thanks.\",\"outcome\":[\"callback_needed\"],\"follow_up\":true},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: Your installer cracked three of my roof tiles yesterday and nobody has called me. I'm really not happy.\\nAI: I'm sorry to hear that. I've passed this to the team.\\nUser: I want someone to fix it this week.\",\"outcome\":[\"complaint\"],\"follow_up\":true},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: Oh, sorry, is this the pizza shop? I wanted to order a large pepperoni.\\nAI: This is Acme Solar, I think you have the wrong number.\\nUser: Oops, sorry. Bye.\",\"outcome\":[\"spam_or_wrong_number\"],\"follow_up\":false},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: Congratulations, your business has been selected for a free search engine listing upgrade, press one to speak to an advisor.\\nAI: Sorry, I can only help with Acme Solar bookings.\\nUser: Press one now to claim your offer.\",\"outcome\":[\"spam_or_wrong_number\"],\"follow_up\":false},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: Can you move my installation to Saturday?\\nAI: Sorry, installations are only on weekdays. Would the Monday after work?\\nUser: Yes, Monday is fine.\\nAI: Done, you're now booked for Monday the 9th.\\nUser: Thanks.\",\"outcome\":[\"changed_booking\"],\"follow_up\":false},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: I want to check my booking.\\nAI: I can't find an account linked to this phone number. Would you like the team to call you back?\\nUser: Yes please, call me back on this number.\\nAI: Done, someone will call you within one business day.\",\"outcome\":[\"callback_needed\"],\"follow_up\":true},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: I've been charged twice for my deposit and I want the second one back.\\nAI: I'm sorry about that. I can't change payments on a call, so I've passed it to the team.\\nUser: Okay, please get someone to sort it out.\",\"outcome\":[\"complaint\",\"callback_needed\"],\"follow_up\":true},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: What does the inverter actually do?\\nAI: It turns the power from your panels into the kind your home uses.\\nUser: Ah, that makes sense. Thanks, that's all I needed.\",\"outcome\":[\"info_only\"],\"follow_up\":false},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: Actually I'm driving, I'll call back later myself, don't worry about it.\\nAI: No problem, have a good day.\",\"outcome\":[\"info_only\"],\"follow_up\":false},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: I want to cancel my installation completely.\\nAI: I can't cancel bookings on a call, but I've asked the team to call you back about it.\\nUser: Okay.\",\"outcome\":[\"callback_needed\"],\"follow_up\":true},{\"transcript\":\"AI: Thanks for calling Acme Solar, how can I help?\\nUser: Hi, I'm calling about a refund for the late installation, it was supposed to be\",\"outcome\":[\"callback_needed\",\"complaint\",\"unclassified\"],\"follow_up\":true,\"ended_reason\":\"pipeline-error-provider-fault\"}].map((t, i) => ({ json: { n: i + 1, ...t, call_id: 'eval-' + $execution.id + '-' + (i + 1) } }));"
+      },
+      "id": "6995b9ba-3faf-e104-d63d-b655ca8ac8ec",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Send Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/voice",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: { type: 'end-of-call-report', endedReason: $json.ended_reason || 'customer-ended-call', cost: 0, startedAt: $now.minus({ minutes: 2 }).toISO(), endedAt: $now.toISO(), call: { id: $json.call_id, customer: { number: '+61491570199' } }, artifact: { transcript: $json.transcript } } }) }}",
+        "options": {
+          "timeout": 60000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 8000
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__VOICE_CRED_ID__",
+          "name": "Voice server secret"
+        }
+      },
+      "id": "fce3b1d8-dd2e-9ad5-2712-a6e0752924f2",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst tests = $('Test Set').all().map((i) => i.json);\nconst res = $input.all().map((i) => i.json);\nlet right = 0, missed = 0, extra = 0, aiDown = 0; const details = [];\ntests.forEach((t, i) => {\n  const r = (res[i] && res[i].body) || {};\n  if (['ai_unavailable', 'ai_output_unusable'].includes(r.reason)) aiDown++;\n  const outcomeOk = t.outcome.includes(r.outcome);\n  if (outcomeOk) right++;\n  if (t.follow_up && r.follow_up !== true) missed++;\n  if (!t.follow_up && r.follow_up === true) extra++;\n  const verdict = t.follow_up && r.follow_up !== true ? 'MISSED CALL BACK' : !outcomeOk ? 'wrong outcome' : !t.follow_up && r.follow_up === true ? 'extra call back' : 'correct';\n  details.push({ n: t.n, first_line: t.transcript.split('\\n')[1] || '', expected: t.outcome.join(' or ') + (t.follow_up ? ' + call back' : ''), outcome: r.outcome || null, follow_up: r.follow_up ?? null, verdict });\n});\nreturn [{ json: { run_at: new Date().toISOString(), total: tests.length, needs_call_back: tests.filter((t) => t.follow_up).length,\n  outcome_accuracy: Math.round((right / tests.length) * 1000) / 1000, missed_call_backs: missed, extra_call_backs: extra, ai_unavailable: aiDown, details: JSON.stringify(details) } }];"
+      },
+      "id": "0d52279b-fb50-5f0b-2619-2350191b8beb",
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "name": "Save Run",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "voice_eval_scores"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "run_at": "={{ $json.run_at }}",
+            "total": "={{ $json.total }}",
+            "needs_call_back": "={{ $json.needs_call_back }}",
+            "outcome_accuracy": "={{ $json.outcome_accuracy }}",
+            "missed_call_backs": "={{ $json.missed_call_backs }}",
+            "extra_call_backs": "={{ $json.extra_call_backs }}",
+            "ai_unavailable": "={{ $json.ai_unavailable }}",
+            "details": "={{ $json.details }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "1ccc1e92-bd87-c9ea-38c1-498b76a62360",
+      "position": [
+        1040,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Run Eval": {
+      "main": [
+        [
+          {
+            "node": "Test Set",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Test Set": {
+      "main": [
+        [
+          {
+            "node": "Send Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Report": {
+      "main": [
+        [
+          {
+            "node": "Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score": {
+      "main": [
+        [
+          {
+            "node": "Save Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__",
+    "timezone": "Australia/Brisbane"
+  }
+}

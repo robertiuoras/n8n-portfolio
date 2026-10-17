@@ -1,0 +1,519 @@
+{
+  "name": "ops-uptime",
+  "nodes": [
+    {
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "5edeb83c-376a-1356-0eb2-65f9592edbfb",
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "name": "Run Checks",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "parameters": {},
+      "id": "3c14c700-feb5-952a-c26f-91522b450bb5",
+      "position": [
+        0,
+        400
+      ]
+    },
+    {
+      "name": "Checks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [[\"mock-crm\",\"GET\",\"mock-crm/contacts?email=uptime-probe@demo.test\",404],[\"chatbot-to-crm\",\"POST\",\"chatbot-summary\",400],[\"ai-lead-qualify\",\"POST\",\"lead\",400],[\"support-bot-with-fallback\",\"POST\",\"support\",400],[\"rag-ask\",\"POST\",\"rag/ask\",400],[\"guarded-agent\",\"POST\",\"agent\",400],[\"voice-agent\",\"POST\",\"voice\",403]].map(([check, method, path, expect]) => ({ json: { check, method, url: 'http://localhost:5678/webhook/' + path, expect } }));"
+      },
+      "id": "181462f1-13da-7e61-2c30-fcbb9d9cffb3",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Each Check",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "dfa92576-0b64-ec58-6e15-c3f2990583d7",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Start Clock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { ...$json, t0: Date.now() } };"
+      },
+      "id": "80e82de6-62db-2373-a9dd-239645e00b13",
+      "position": [
+        780,
+        460
+      ]
+    },
+    {
+      "name": "Probe",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "={{ $json.method }}",
+        "url": "={{ $json.url }}",
+        "sendBody": "={{ $json.method === 'POST' }}",
+        "specifyBody": "json",
+        "jsonBody": "={}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "46d655ca-2e19-7694-4ecc-2769eda964f3",
+      "position": [
+        1040,
+        460
+      ]
+    },
+    {
+      "name": "Stop Clock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst c = $('Start Clock').item.json; const r = $json;\nconst status = r.statusCode || 0; const ok = status === c.expect;\nconst error = ok ? '' : r.error ? String(r.error.message || r.error).slice(0, 200) : 'expected ' + c.expect + ', got ' + status;\nreturn { json: { check: c.check, url: c.url, expect: c.expect, status, ok, ms: Date.now() - c.t0, error } };"
+      },
+      "id": "bb3c81fc-3003-5743-e0a4-719258719297",
+      "position": [
+        1300,
+        460
+      ]
+    },
+    {
+      "name": "Recent Checks",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "ops_checks"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "checked_ms",
+              "condition": "gt",
+              "keyValue": "={{ $now.toMillis() - 40 * 60 * 1000 }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "3557f65c-2bff-2c7a-8d42-2fcbdb39e354",
+      "position": [
+        780,
+        140
+      ]
+    },
+    {
+      "name": "Open Alerts",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "ops_alerts"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "status",
+              "condition": "eq",
+              "keyValue": "open"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "executeOnce": true,
+      "id": "de4b64d8-3c1f-10e2-7658-c6c2a004ff7c",
+      "position": [
+        1040,
+        140
+      ]
+    },
+    {
+      "name": "Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst results = $('Each Check').all(0).map((i) => i.json);\nconst prev = $('Recent Checks').all().map((i) => i.json).filter((r) => r.check);\nconst open = $('Open Alerts').all().map((i) => i.json).filter((r) => r.alert_id);\nconst at = $now.toISO(), ms = $now.toMillis(), out = [];\nfor (const r of results) {\n  out.push({ json: { kind: 'check', run_id: String($execution.id), check: r.check, url: r.url, expected: r.expect, status: r.status, ok: String(r.ok), ms: r.ms, error: r.error, checked_at: at, checked_ms: ms } });\n  const last = prev.filter((p) => p.check === r.check).sort((a, b) => b.checked_ms - a.checked_ms)[0];\n  const alert = open.find((a) => a.check === r.check);\n  if (!r.ok && last && last.ok === 'false' && !alert) out.push({ json: { kind: 'open', alert_id: r.check + '-' + ms, check: r.check, opened_at: at, last_error: r.error } });\n  if (r.ok && alert) out.push({ json: { kind: 'close', alert_id: alert.alert_id, closed_at: at } });\n}\nreturn out;"
+      },
+      "id": "4320d9d7-e7b3-f3d7-5af1-5b353afc5182",
+      "position": [
+        1300,
+        140
+      ]
+    },
+    {
+      "name": "Write",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 3,
+        "output": "={{ [\"check\",\"open\",\"close\"].indexOf($json.kind) }}"
+      },
+      "id": "85d8783f-adf4-1ec6-4dc5-6e42d4052a1d",
+      "position": [
+        1560,
+        140
+      ]
+    },
+    {
+      "name": "Save Check",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "ops_checks"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "run_id": "={{ $json.run_id }}",
+            "check": "={{ $json.check }}",
+            "url": "={{ $json.url }}",
+            "expected": "={{ $json.expected }}",
+            "status": "={{ $json.status }}",
+            "ok": "={{ $json.ok }}",
+            "ms": "={{ $json.ms }}",
+            "error": "={{ $json.error }}",
+            "checked_at": "={{ $json.checked_at }}",
+            "checked_ms": "={{ $json.checked_ms }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "9a8dd24d-42e4-adb9-5cd6-fbf9b9100c66",
+      "position": [
+        1820,
+        0
+      ]
+    },
+    {
+      "name": "Prune Old Checks",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "ops_checks"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "checked_ms",
+              "condition": "lt",
+              "keyValue": "={{ $now.toMillis() - 8 * 86400000 }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f7ef47a0-a528-a7b4-eb98-1754442a2589",
+      "position": [
+        2080,
+        0
+      ]
+    },
+    {
+      "name": "Open Alert",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "ops_alerts"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "alert_id": "={{ $json.alert_id }}",
+            "check": "={{ $json.check }}",
+            "status": "open",
+            "opened_at": "={{ $json.opened_at }}",
+            "closed_at": "",
+            "last_error": "={{ $json.last_error }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "e7f1a1d7-6014-e711-49a3-42d81a4dd70a",
+      "position": [
+        1820,
+        160
+      ]
+    },
+    {
+      "name": "Close Alert",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "ops_alerts"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "alert_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.alert_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "closed",
+            "closed_at": "={{ $json.closed_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "4a7b67ba-b33c-b2fa-1f70-6aaa5099137d",
+      "position": [
+        1820,
+        320
+      ]
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Checks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Checks": {
+      "main": [
+        [
+          {
+            "node": "Checks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Checks": {
+      "main": [
+        [
+          {
+            "node": "Each Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Each Check": {
+      "main": [
+        [
+          {
+            "node": "Recent Checks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Start Clock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Clock": {
+      "main": [
+        [
+          {
+            "node": "Probe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Probe": {
+      "main": [
+        [
+          {
+            "node": "Stop Clock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stop Clock": {
+      "main": [
+        [
+          {
+            "node": "Each Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recent Checks": {
+      "main": [
+        [
+          {
+            "node": "Open Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open Alerts": {
+      "main": [
+        [
+          {
+            "node": "Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan": {
+      "main": [
+        [
+          {
+            "node": "Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write": {
+      "main": [
+        [
+          {
+            "node": "Save Check",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Open Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Close Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Check": {
+      "main": [
+        [
+          {
+            "node": "Prune Old Checks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__",
+    "timezone": "Australia/Brisbane"
+  }
+}

@@ -32,6 +32,12 @@ const tables = {
   agent_approvals: { approval_id: S, booking_id: S, customer_email: S, amount: N, request: S, status: S, approver: S, created_at: S, decided_at: S },
   agent_audit: { customer_email: S, message: S, proposed: S, decision: S, reason: S, booking_id: S, approval_id: S, dry_run: S, at: S },
   agent_eval_scores: { run_at: S, total: N, valid_requests: N, decision_accuracy: N, unsafe_actions: N, over_blocked: N, wrong_action: N, ai_unavailable: N, details: S },
+  voice_callers: { phone: S, customer_email: S },
+  voice_calls: { call_id: S, phone: S, customer_email: S, started_at: S, duration_s: N, cost: N, ended_reason: S, outcome: S, follow_up: S, follow_up_reason: S, summary: S, ai_status: S, at: S },
+  voice_callbacks: { call_id: S, phone: S, customer_email: S, reason: S, source: S, status: S, created_at: S },
+  ops_checks: { run_id: S, check: S, url: S, expected: N, status: N, ok: S, ms: N, error: S, checked_at: S, checked_ms: N },
+  ops_alerts: { alert_id: S, check: S, status: S, opened_at: S, closed_at: S, last_error: S },
+  voice_eval_scores: { run_at: S, total: N, needs_call_back: N, outcome_accuracy: N, missed_call_backs: N, extra_call_backs: N, ai_unavailable: N, details: S },
 };
 const have = new Set((await api('GET', '/api/v1/data-tables?limit=250')).data.map((t) => t.name));
 // The Data Table node finds a table "by name" with a substring match and takes the first hit, so a table called
@@ -65,23 +71,45 @@ if (!(await api('GET', `/api/v1/data-tables/${bookingsId}/rows?limit=1`)).data.l
     ({ booking_id, customer_email, status, install_date, paid_amount, refunded_amount: 0, updated_at: new Date().toISOString() })) });
   console.log('seeded agent_bookings');
 }
+// Which phone number belongs to which demo customer (numbers from the 0491 570 range Australia reserves for fiction).
+const callersId = await tableId('voice_callers');
+if (!(await api('GET', `/api/v1/data-tables/${callersId}/rows?limit=1`)).data.length) {
+  await api('POST', `/api/v1/data-tables/${callersId}/rows`, { data: [['+61491570156', 'alex@demo.test'], ['+61491570157', 'sam@demo.test'], ['+61491570158', 'jo@demo.test']]
+    .map(([phone, customer_email]) => ({ phone, customer_email })) });
+  console.log('seeded voice_callers');
+}
 // Header key for approving refunds (credential "Agent approver key"). The value lives only in data/approver-key.txt
 // (git-ignored) and in n8n; it is made once and re-saved on every run.
 const keyFile = path.join(root, 'data', 'approver-key.txt');
 fs.mkdirSync(path.dirname(keyFile), { recursive: true });
 if (!fs.existsSync(keyFile)) fs.writeFileSync(keyFile, crypto.randomBytes(24).toString('hex'), { mode: 0o600 });
-const approverCred = { name: 'Agent approver key', type: 'httpHeaderAuth', data: { name: 'x-approver-key', value: fs.readFileSync(keyFile, 'utf8').trim() } };
-const foundKey = (await api('GET', '/api/v1/credentials?limit=250')).data.find((c) => c.name === approverCred.name && c.type === approverCred.type);
-const approverId = foundKey ? (await api('PATCH', `/api/v1/credentials/${foundKey.id}`, { name: approverCred.name, data: approverCred.data }), foundKey.id) : (await api('POST', '/api/v1/credentials', approverCred)).id;
+// Saves a credential by name and type: updates the one already there, otherwise creates it. Returns its id.
+const upsertCred = async (cred) => {
+  const found = (await api('GET', '/api/v1/credentials?limit=250')).data.find((x) => x.name === cred.name && x.type === cred.type);
+  return found ? (await api('PATCH', `/api/v1/credentials/${found.id}`, { name: cred.name, data: cred.data }), found.id) : (await api('POST', '/api/v1/credentials', cred)).id;
+};
+const approverId = await upsertCred({ name: 'Agent approver key', type: 'httpHeaderAuth', data: { name: 'x-approver-key', value: fs.readFileSync(keyFile, 'utf8').trim() } });
+// Shared secret Vapi sends in the x-vapi-secret header (a Vapi Bearer credential with that header name and no prefix).
+// Same handling as the approver key: data/voice-secret.txt (git-ignored) and the n8n credential "Voice server secret".
+const voiceFile = path.join(root, 'data', 'voice-secret.txt');
+if (!fs.existsSync(voiceFile)) fs.writeFileSync(voiceFile, crypto.randomBytes(24).toString('hex'), { mode: 0o600 });
+const voiceId = await upsertCred({ name: 'Voice server secret', type: 'httpHeaderAuth', data: { name: 'x-vapi-secret', value: fs.readFileSync(voiceFile, 'utf8').trim() } });
+// The dashboard reads n8n's execution log with the same local API key the scripts use (credential "n8n API (local)"),
+// and its page sits behind a login: user "ops", password made once into data/dashboard-password.txt.
+const apiCredId = await upsertCred({ name: 'n8n API (local)', type: 'httpHeaderAuth', data: { name: 'X-N8N-API-KEY', value: KEY } });
+const dashFile = path.join(root, 'data', 'dashboard-password.txt');
+if (!fs.existsSync(dashFile)) fs.writeFileSync(dashFile, crypto.randomBytes(18).toString('base64url'), { mode: 0o600 });
+const dashId = await upsertCred({ name: 'Dashboard login', type: 'httpBasicAuth', data: { user: 'ops', password: fs.readFileSync(dashFile, 'utf8').trim() } });
 const wfs = (await api('GET', '/api/v1/workflows?limit=250')).data;
 const idOf = (name) => wfs.find((w) => w.name === name)?.id;
-const order = ['error-handler', 'mock-crm', 'error-demo', 'chatbot-to-crm', 'ai-lead-qualify', 'support-bot-with-fallback', 'support-bot-eval', 'rag-ingest', 'rag-ask', 'rag-eval', 'guarded-agent', 'guarded-agent-approve', 'guarded-agent-eval'];
+const order = ['error-handler', 'mock-crm', 'error-demo', 'chatbot-to-crm', 'ai-lead-qualify', 'support-bot-with-fallback', 'support-bot-eval', 'rag-ingest', 'rag-ask', 'rag-eval', 'guarded-agent', 'guarded-agent-approve', 'guarded-agent-eval', 'voice-agent', 'voice-eval', 'ops-uptime', 'ops-dashboard'];
 const ids = {};
 for (const name of order) {
   let txt = fs.readFileSync(path.join(root, 'workflows', name + '.json'), 'utf8');
   if (ids['error-handler']) txt = txt.replaceAll('__ERROR_WORKFLOW_ID__', ids['error-handler']);
   if (credId) txt = txt.replaceAll('__GEMINI_CRED_ID__', credId);
-  txt = txt.replaceAll('__APPROVER_CRED_ID__', approverId);
+  txt = txt.replaceAll('__APPROVER_CRED_ID__', approverId).replaceAll('__VOICE_CRED_ID__', voiceId)
+    .replaceAll('__N8N_API_CRED_ID__', apiCredId).replaceAll('__DASH_CRED_ID__', dashId);
   const def = JSON.parse(txt);
   if (def.settings.errorWorkflow === '__ERROR_WORKFLOW_ID__') delete def.settings.errorWorkflow;
   const existing = wfs.find((w) => w.name === name) || null;
