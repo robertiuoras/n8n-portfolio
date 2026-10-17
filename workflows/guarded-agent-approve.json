@@ -1,0 +1,556 @@
+{
+  "name": "guarded-agent-approve",
+  "nodes": [
+    {
+      "name": "Decision",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "76b5f1ba-0757-b32a-42af-470b5ff774a5",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent/approve",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__APPROVER_CRED_ID__",
+          "name": "Agent approver key"
+        }
+      },
+      "id": "f70e76fe-65a7-66ba-6fa9-23ff20f58121",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst b = $json.body || {}; const errs = [];\nif (typeof b.approval_id !== 'string' || !b.approval_id) errs.push('approval_id is required');\nif (!['approve', 'reject'].includes(b.decision)) errs.push('decision must be approve or reject');\nif (typeof b.approver !== 'string' || !b.approver.trim() || b.approver.length > 80) errs.push('approver (who decided) is required');\nreturn { json: { valid: errs.length === 0, errors: errs, approval_id: b.approval_id, decision: b.decision, approver: typeof b.approver === 'string' ? b.approver.trim() : '' } };"
+      },
+      "id": "92df798f-b278-996d-2078-f539109c6e6f",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "236392a5-44d5-34b5-993b-5068f8f1d35d",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "73dadb75-4fd1-53ee-8dd8-04f1a55249d7",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'rejected', reasons: $('Validate').first().json.errors }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "c1fa1ac7-7c1e-fcee-d07e-29ba9e153352",
+      "position": [
+        520,
+        520
+      ]
+    },
+    {
+      "name": "Find Approval",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "agent_approvals"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "approval_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.approval_id }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "770505fc-8b94-a5ec-59b1-22e47bdb30b8",
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "name": "Find Booking",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "agent_bookings"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "booking_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.booking_id || '-' }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "c82a063e-9c0e-05db-722f-b1d4b53aac25",
+      "position": [
+        1040,
+        300
+      ]
+    },
+    {
+      "name": "Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst v = $('Validate').first().json; const a = $('Find Approval').first().json; const b = $json;\nlet route = '', message = '', new_refunded = null;\nif (!a.approval_id) { route = 'not_found'; message = 'no such approval'; }\nelse if (a.status !== 'pending') { route = 'conflict'; message = 'already ' + a.status + ' by ' + a.approver; }\nelse if (v.decision === 'reject') route = 'reject';\nelse if (!b.booking_id) { route = 'conflict'; message = 'the booking no longer exists'; }\nelse {\n  // Re-checked at approval time: another refund may have been paid since this one was queued.\n  const remaining = Math.round(((b.paid_amount || 0) - (b.refunded_amount || 0)) * 100) / 100;\n  if (a.amount > remaining) { route = 'conflict'; message = 'only $' + remaining + ' is left to refund on ' + b.booking_id; }\n  else { route = 'apply'; new_refunded = Math.round(((b.refunded_amount || 0) + a.amount) * 100) / 100; }\n}\nreturn { json: { route, message, new_refunded, approval_id: v.approval_id, decision: v.decision, approver: v.approver,\n  booking_id: a.booking_id || '', amount: a.amount || 0, customer_email: a.customer_email || '' } };"
+      },
+      "id": "42936d4d-e528-2aa7-483f-5b2b66af1c35",
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "name": "Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 4,
+        "output": "={{ [\"apply\",\"reject\",\"not_found\",\"conflict\"].indexOf($json.route) }}"
+      },
+      "id": "2070708c-fadc-878d-87ba-273744412ce7",
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "name": "Mark Approved",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "agent_approvals"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "approval_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check').first().json.approval_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "approved",
+            "approver": "={{ $('Check').first().json.approver }}",
+            "decided_at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "7759e441-23ab-5414-ddf3-0b0116d821d8",
+      "position": [
+        1820,
+        120
+      ]
+    },
+    {
+      "name": "Pay Refund",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "agent_bookings"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "booking_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check').first().json.booking_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "refunded_amount": "={{ $('Check').first().json.new_refunded }}",
+            "updated_at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true,
+      "id": "78b3e984-eb94-4e31-9d02-9d421790b07e",
+      "position": [
+        2080,
+        120
+      ]
+    },
+    {
+      "name": "Mark Rejected",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "agent_approvals"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "approval_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check').first().json.approval_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "rejected",
+            "approver": "={{ $('Check').first().json.approver }}",
+            "decided_at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "1827c592-f627-24fe-f0d0-e9aa4570266f",
+      "position": [
+        1820,
+        300
+      ]
+    },
+    {
+      "name": "Audit Decision",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "agent_audit"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "customer_email": "={{ $('Check').first().json.customer_email }}",
+            "message": "={{ 'refund of $' + $('Check').first().json.amount + ' ' + $('Check').first().json.decision + 'd by ' + $('Check').first().json.approver }}",
+            "proposed": "",
+            "decision": "={{ $('Check').first().json.decision === 'approve' ? 'approved' : 'rejected' }}",
+            "reason": "human_decision",
+            "booking_id": "={{ $('Check').first().json.booking_id }}",
+            "approval_id": "={{ $('Check').first().json.approval_id }}",
+            "dry_run": "false",
+            "at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "b5a03e22-2aa9-aebb-bb67-1aff0cfbde40",
+      "position": [
+        2340,
+        200
+      ]
+    },
+    {
+      "name": "Respond Decided",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: $('Check').first().json.decision === 'approve' ? 'approved' : 'rejected', approval_id: $('Check').first().json.approval_id, booking_id: $('Check').first().json.booking_id, refunded_total: $('Check').first().json.new_refunded }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "23571615-3cb5-f506-e54e-30d0ff2a9e9a",
+      "position": [
+        2600,
+        200
+      ]
+    },
+    {
+      "name": "Respond 404",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'not_found', message: $json.message }) }}",
+        "options": {
+          "responseCode": 404
+        }
+      },
+      "id": "c89d4935-0297-3834-d13d-c99ccdd183b6",
+      "position": [
+        1820,
+        480
+      ]
+    },
+    {
+      "name": "Respond 409",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'conflict', message: $json.message }) }}",
+        "options": {
+          "responseCode": 409
+        }
+      },
+      "id": "8246180a-f6d9-192e-faec-d24d4d3bd52f",
+      "position": [
+        1820,
+        640
+      ]
+    }
+  ],
+  "connections": {
+    "Decision": {
+      "main": [
+        [
+          {
+            "node": "Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Find Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Approval": {
+      "main": [
+        [
+          {
+            "node": "Find Booking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Booking": {
+      "main": [
+        [
+          {
+            "node": "Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check": {
+      "main": [
+        [
+          {
+            "node": "Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route": {
+      "main": [
+        [
+          {
+            "node": "Mark Approved",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 404",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 409",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Approved": {
+      "main": [
+        [
+          {
+            "node": "Pay Refund",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pay Refund": {
+      "main": [
+        [
+          {
+            "node": "Audit Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Rejected": {
+      "main": [
+        [
+          {
+            "node": "Audit Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Decision": {
+      "main": [
+        [
+          {
+            "node": "Respond Decided",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__",
+    "timezone": "Australia/Brisbane"
+  }
+}
