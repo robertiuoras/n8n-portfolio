@@ -32,5 +32,8 @@ A tiny fake CRM API built as an n8n workflow (create/update a contact, look one 
 ![canvas](screenshots/error-handler.png)
 **Problem it solves:** automations fail quietly. Any workflow pointing at this one as its Error Workflow gets its crash written to a `workflow_errors` table (workflow, step, message, run id, time). `error-demo` crashes on purpose to prove it.
 
+## Publishing safety
+Every push is scanned for secrets (gitleaks) and for a private list of client identifiers, across the whole history, by `scripts/public-gate.mjs` (pre-push hook and GitHub Actions). The scan done before publishing is in [tests/PUBLIC-SCAN.md](tests/PUBLIC-SCAN.md).
+
 ## Rebuilding
 `node scripts/gen-workflows.mjs` (writes `workflows/`), `node scripts/setup.mjs` (creates tables, imports and activates), then `bash tests/run.sh`. The AI workflows use an n8n credential "Gemini free tier" (Google Gemini(PaLM) API); `setup.mjs` creates or updates it from the `GEMINI_API_KEY` environment variable (a free-tier key from a Google Cloud project with billing off, so it cannot be charged). Each full test run spends about 25 Gemini requests; the free tier for `gemini-3.5-flash-lite` allows 500 a day and 15 a minute, which is why the eval sends one question every 8 seconds.

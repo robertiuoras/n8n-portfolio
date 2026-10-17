@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks a push if any commit holds a secret or a client's name (see scripts/public-gate.mjs).
+# Enabled per clone with: git config core.hooksPath .githooks
+exec node "$(git rev-parse --show-toplevel)/scripts/public-gate.mjs"
