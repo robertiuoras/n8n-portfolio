@@ -1,0 +1,201 @@
+{
+  "name": "mock-whatsapp",
+  "nodes": [
+    {
+      "name": "Send Message",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "850e1921-c8b2-d365-afb5-35a87c36f93d",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "mock-whatsapp/messages",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__WA_TOKEN_CRED_ID__",
+          "name": "WhatsApp access token"
+        }
+      },
+      "id": "28ebfc87-bc0c-1fb8-bd58-e59e11104adb",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Check Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst b = $json.body || {}; const to = String(b.to || ''); const text = b.text && b.text.body;\nlet code = 0, message = '';\nif (b.messaging_product !== 'whatsapp' || !/^\\d{8,15}$/.test(to) || b.type !== 'text' || typeof text !== 'string' || !text || text.length > 4096) { code = 100; message = '(#100) Invalid parameter'; }\nelse if (to.endsWith('0500')) { code = 131047; message = 'Re-engagement message: more than 24 hours have passed since the recipient last replied.'; }\nreturn { json: { ok: code === 0, code, message, to, text: typeof text === 'string' ? text : '', wamid: 'wamid.mock-' + $execution.id } };"
+      },
+      "id": "a791ff96-6632-a78e-7c06-88ccf46f451e",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "236392a5-44d5-34b5-993b-5068f8f1d35d",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e1c75c1b-ecfa-42b2-f402-f13b98dcc121",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Save To Outbox",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "wa_outbox"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "to": "={{ $('Check Request').first().json.to }}",
+            "text": "={{ $('Check Request').first().json.text }}",
+            "wamid": "={{ $('Check Request').first().json.wamid }}",
+            "at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "db14a46e-1136-10c1-99b4-2778a427d4a5",
+      "position": [
+        780,
+        200
+      ]
+    },
+    {
+      "name": "Respond Sent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', contacts: [{ input: $('Check Request').first().json.to, wa_id: $('Check Request').first().json.to }], messages: [{ id: $('Check Request').first().json.wamid }] }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "bba4ab71-8c8d-5a6e-6296-a3b46ec54022",
+      "position": [
+        1040,
+        200
+      ]
+    },
+    {
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: { message: $json.message, type: 'OAuthException', code: $json.code } }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "ac2d0e2f-4539-5d2a-8c6b-ef38392f5914",
+      "position": [
+        780,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Send Message": {
+      "main": [
+        [
+          {
+            "node": "Check Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Request": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Save To Outbox",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save To Outbox": {
+      "main": [
+        [
+          {
+            "node": "Respond Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Australia/Brisbane"
+  }
+}

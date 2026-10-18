@@ -38,7 +38,7 @@
       "typeVersion": 2,
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "return [[\"mock-crm\",\"GET\",\"mock-crm/contacts?email=uptime-probe@demo.test\",404],[\"chatbot-to-crm\",\"POST\",\"chatbot-summary\",400],[\"ai-lead-qualify\",\"POST\",\"lead\",400],[\"support-bot-with-fallback\",\"POST\",\"support\",400],[\"rag-ask\",\"POST\",\"rag/ask\",400],[\"guarded-agent\",\"POST\",\"agent\",400],[\"voice-agent\",\"POST\",\"voice\",403]].map(([check, method, path, expect]) => ({ json: { check, method, url: 'http://localhost:5678/webhook/' + path, expect } }));"
+        "jsCode": "return [[\"mock-crm\",\"GET\",\"mock-crm/contacts?email=uptime-probe@demo.test\",404],[\"chatbot-to-crm\",\"POST\",\"chatbot-summary\",400],[\"ai-lead-qualify\",\"POST\",\"lead\",400],[\"support-bot-with-fallback\",\"POST\",\"support\",400],[\"rag-ask\",\"POST\",\"rag/ask\",400],[\"guarded-agent\",\"POST\",\"agent\",400],[\"voice-agent\",\"POST\",\"voice\",403],[\"invoice-extract\",\"POST\",\"invoice\",400],[\"email-triage\",\"POST\",\"email\",400],[\"whatsapp-bot\",\"POST\",\"whatsapp\",401]].map(([check, method, path, expect]) => ({ json: { check, method, url: 'http://localhost:5678/webhook/' + path, expect } }));"
       },
       "id": "181462f1-13da-7e61-2c30-fcbb9d9cffb3",
       "position": [

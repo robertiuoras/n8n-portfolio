@@ -95,7 +95,7 @@
       "typeVersion": 2,
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "\nconst all = $('List Workflows').first().json.body.data || [];\nreturn [\"ai-lead-qualify\",\"support-bot-with-fallback\",\"rag-ask\",\"guarded-agent\",\"voice-agent\"].map((name) => all.find((x) => x.name === name)).filter(Boolean).map((x) => ({ json: { id: x.id, name: x.name } }));"
+        "jsCode": "\nconst all = $('List Workflows').first().json.body.data || [];\nreturn [\"ai-lead-qualify\",\"support-bot-with-fallback\",\"rag-ask\",\"guarded-agent\",\"voice-agent\",\"invoice-extract\",\"email-triage\",\"whatsapp-bot\"].map((name) => all.find((x) => x.name === name)).filter(Boolean).map((x) => ({ json: { id: x.id, name: x.name } }));"
       },
       "id": "01e55964-7f7e-db4c-03c0-bb945445f6fb",
       "position": [

@@ -16,6 +16,10 @@ if (cmd === 'delete') process.exit(0);
 const w = JSON.parse(fs.readFileSync(root + 'workflows/' + name + '.json', 'utf8'));
 w.name = stubName; delete w.settings.errorWorkflow;
 const target = w.nodes.find((n) => n.name === chainNode);
+// A workflow can have more than one webhook (whatsapp-bot: GET to verify, POST for messages); the stub header is read
+// from the POST one, and every path gets "-stub" so the copy never clashes with the real workflow.
+const hooks = w.nodes.filter((n) => n.type.endsWith('.webhook'));
+const hook = hooks.find((n) => n.parameters.httpMethod === 'POST') || hooks[0];
 if (target.type === 'n8n-nodes-base.httpRequest') {
   // An HTTP step (the embeddings call) is instead pointed at a Gemini model that does not exist: the API answers 404,
   // which is what an outage looks like to the workflow.
@@ -27,9 +31,9 @@ if (target.type === 'n8n-nodes-base.httpRequest') {
   const chain = target;
   // Header value "error" makes the stub fail like an AI outage; the chain keeps onError, so the real fallback runs.
   chain.type = 'n8n-nodes-base.code'; chain.typeVersion = 2;
-  chain.parameters = { mode: 'runOnceForEachItem', jsCode: `const h = $('${w.nodes.find((n) => n.type.endsWith('webhook')).name}').first().json.headers['x-stub-llm']; if (h === 'error') throw new Error('stubbed AI outage'); return { json: { output: JSON.parse(h) } };` };
+  chain.parameters = { mode: 'runOnceForEachItem', jsCode: `const h = $('${hook.name}').first().json.headers['x-stub-llm']; if (h === 'error') throw new Error('stubbed AI outage'); return { json: { output: JSON.parse(h) } };` };
 }
-const wh = w.nodes.find((n) => n.type.endsWith('.webhook')); wh.parameters.path += '-stub'; wh.webhookId = wh.webhookId.replace(/.$/, 'f');
+for (const wh of hooks) { wh.parameters.path += '-stub'; wh.webhookId = wh.webhookId.replace(/.$/, 'f'); }
 const created = await api('POST', '/api/v1/workflows', w);
 await api('POST', `/api/v1/workflows/${created.id}/activate`, {});
 await new Promise((r) => setTimeout(r, 3000)); // let the webhook register

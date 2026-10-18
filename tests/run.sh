@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end tests against the local n8n (http://localhost:5678). Every outcome is proven by reading Data Table
 # rows back through the n8n API, not just by looking at HTTP codes. Writes tests/RESULTS.md.
-# Needs: curl, jq, node, the N8N_LOCAL_API_KEY secret.  Takes about 20 minutes (the timeout cases wait on purpose and
-# all four evals pace one question every 8 s for the Gemini free tier).
+# Needs: curl, jq, node, openssl, the N8N_LOCAL_API_KEY secret.  Takes about 35 minutes (the timeout cases wait on purpose
+# and all seven evals pace one question every 8 s for the Gemini free tier).
 set -u
 cd "$(dirname "$0")/.."
 BASE=http://localhost:5678
@@ -336,6 +336,109 @@ vcase "voice (AI stubbed): an outcome outside the list -> treated as unusable, c
 node scripts/stub-variant.mjs delete voice-agent "Classify Call" >/dev/null
 delrows voice_callers phone "$VP"
 
+echo "== invoice-extract (supplier invoice PDF to checked fields)"
+IU=$BASE/webhook/invoice; ISU=$BASE/webhook/invoice-stub
+b64() { base64 -i "$1" | tr -d '\n'; }
+ibody() { jq -nc --arg f "$1" --arg b "$2" '{file_name:$f,content_base64:$b}'; }
+review() { rows invoice_review file_name "$1" | jq -c '.[0]|{reasons,status}'; }
+post $IU '{}'; c1=$CODE; r1=$(jq -c .reasons <<<"$BODY")
+post $IU "$(ibody note-$RUN.pdf "$(printf 'Invoice 42, total $100' | base64)")"
+expect "invoice: no file, or a file that is not a PDF -> 400 with the reasons, nothing queued" "$([ "$c1" = 400 ] && [ "$CODE" = 400 ] && grep -q 'not a PDF' <<<"$BODY" && [ "$(count invoice_review file_name note-$RUN.pdf)" = 0 ] && echo true)" "empty body HTTP $c1 $r1; text file HTTP $CODE $(jq -c .reasons <<<"$BODY")"
+post $IU "$(ibody scanned-$RUN.pdf "$(b64 tests/invoices/scanned.pdf)")"
+expect "invoice: a scanned PDF with no text layer -> straight to a person, no AI call" "$([ "$CODE" = 202 ] && [ "$(review scanned-$RUN.pdf | jq -r .reasons)" = no_text_layer ] && echo true)" "HTTP $CODE $(jq -c '{status,reasons}' <<<"$BODY"); invoice_review row $(review scanned-$RUN.pdf)"
+IK='86312831477|BES-10482'; delrows invoices invoice_key "$IK"
+if [ -n "$GEM" ]; then
+  post $IU "$(ibody 01-brightline-$RUN.pdf "$(b64 tests/invoices/01-brightline.pdf)")"
+  ent=$(rows invoices invoice_key "$IK")
+  expect "invoice: REAL Gemini reads a clean invoice, every check passes, it is entered with the right total" "$([ "$(jq -r .status <<<"$BODY")" = entered ] && [ "$(jq length <<<"$ent")" = 1 ] && [ "$(jq -r '.[0].total' <<<"$ent")" = 717.2 ] && [ "$(jq -r '.[0].file_name' <<<"$ent")" = 01-brightline-$RUN.pdf ] && echo true)" "HTTP $CODE in ${TIME}s status=$(jq -r .status <<<"$BODY"); invoices row $(jq -c '.[0]|{invoice_key,invoice_date,subtotal,tax,total,currency}' <<<"$ent")"
+  post $IU "$(ibody 01-again-$RUN.pdf "$(b64 tests/invoices/01-brightline.pdf)")"
+  expect "invoice: the same invoice sent again -> duplicate, entered once" "$([ "$(jq -r .status <<<"$BODY")" = duplicate ] && [ "$(jq -r .existing_id <<<"$BODY")" = "$(jq -r '.[0].id' <<<"$ent")" ] && [ "$(count invoices invoice_key "$IK")" = 1 ] && echo true)" "$(jq -c '{status,existing_id}' <<<"$BODY"); invoices rows for $IK: $(count invoices invoice_key "$IK")"
+  delrows invoices invoice_key "$IK" # so the eval's copy of this invoice is new again
+fi
+node scripts/stub-variant.mjs create invoice-extract "Read Invoice" >/dev/null
+post $ISU "$(ibody stub-outage-$RUN.pdf "$(b64 tests/invoices/01-brightline.pdf)")" "x-stub-llm: error"
+expect "invoice (AI stubbed): AI outage -> to a person, nothing entered" "$([ "$CODE" = 202 ] && [ "$(review stub-outage-$RUN.pdf | jq -r .reasons)" = ai_unavailable ] && [ "$(count invoices invoice_key "$IK")" = 0 ] && echo true)" "HTTP $CODE $(jq -c '{status,reasons}' <<<"$BODY"); review row $(review stub-outage-$RUN.pdf)"
+WRONG='{"document_type":"tax_invoice","supplier_name":"Brightline Electrical Supplies Pty Ltd","supplier_abn":"86 312 831 477","invoice_number":"BES-10482","invoice_date":"2026-10-02","due_date":"2026-10-16","currency":"AUD","line_items":[{"description":"DC isolator","quantity":4,"unit_price":68.5,"amount":274},{"description":"Solar cable","quantity":2,"unit_price":189,"amount":378}],"subtotal":652,"tax":65.2,"total":71.72}'
+post $ISU "$(ibody stub-total-$RUN.pdf "$(b64 tests/invoices/01-brightline.pdf)")" "x-stub-llm: $WRONG"
+expect "invoice (AI stubbed): AI misreads the total (71.72, the PDF says 717.20) -> caught against the document, to a person" "$([ "$CODE" = 202 ] && review stub-total-$RUN.pdf | jq -e '.reasons|contains("total_not_in_document")' >/dev/null && [ "$(count invoices invoice_key "$IK")" = 0 ] && echo true)" "HTTP $CODE reasons=$(jq -c .reasons <<<"$BODY"); invoices rows for $IK: $(count invoices invoice_key "$IK")"
+node scripts/stub-variant.mjs delete invoice-extract "Read Invoice" >/dev/null
+
+echo "== email-triage (sort an inbox, draft replies, never send)"
+EU=$BASE/webhook/email; ESU=$BASE/webhook/email-stub
+email() { jq -nc --arg i "$1" --arg s "$2" --arg b "$3" '{message_id:$i,from:"Test Person <test.person@demo.test>",subject:$s,body:$b}'; }
+tri() { rows email_triage message_id "$1" | jq -c '.[0]|{category,urgency,route,reasons,ai_status}'; }
+post $EU '{}'
+expect "email: missing message id, sender and text -> 400 with the reasons" "$([ "$CODE" = 400 ] && [ "$(jq '.reasons|length' <<<"$BODY")" = 3 ] && echo true)" "HTTP $CODE $(jq -c .reasons <<<"$BODY")"
+if [ -n "$GEM" ]; then
+  post $EU "$(email e-$RUN-1 'Quote for solar' $'Hi, we\'re in Robina and thinking about a 6.6 kW system. How do we get a quote, and how much roof space would it need?\nThanks')"
+  dr=$(rows email_drafts message_id e-$RUN-1)
+  expect "email: REAL Gemini sorts a quote request and drafts a reply from the FAQ; saved for a person to approve, not sent" "$([ "$(jq -r .route <<<"$BODY")" = draft_for_approval ] && [ "$(tri e-$RUN-1 | jq -r .route)" = draft_for_approval ] && [ "$(jq -r '.[0].status' <<<"$dr")" = awaiting_approval ] && [ "$(jq -r '.[0].to_email' <<<"$dr")" = test.person@demo.test ] && echo true)" "HTTP $CODE in ${TIME}s; triage row $(tri e-$RUN-1); draft row $(jq -c '.[0]|{status,faq_ids,body:(.body[0:160])}' <<<"$dr")"
+  post $EU "$(email e-$RUN-1 'Quote for solar' 'resent')"
+  expect "email: the same message id again -> duplicate, triaged once" "$([ "$(jq -r .status <<<"$BODY")" = duplicate ] && [ "$(count email_triage message_id e-$RUN-1)" = 1 ] && [ "$(count email_drafts message_id e-$RUN-1)" = 1 ] && echo true)" "status=$(jq -r .status <<<"$BODY"); triage rows $(count email_triage message_id e-$RUN-1), draft rows $(count email_drafts message_id e-$RUN-1)"
+fi
+node scripts/stub-variant.mjs create email-triage "Triage Email" >/dev/null
+tstub() { jq -nc --arg c "$1" --arg u "$2" --arg d "$3" --argjson f "$4" '{category:$c,urgency:$u,summary:"A question.",reply_needed:true,draft_reply:$d,faq_ids:$f}'; }
+ecase() { # ecase <name> <id> <subject> <body> <stub> <expected route> <expected reason part> <expected draft rows>
+  post $ESU "$(email "$2" "$3" "$4")" "x-stub-llm: $5"
+  expect "$1" "$([ "$(tri "$2" | jq -r .route)" = "$6" ] && grep -q -- "$7" <<<"$(tri "$2" | jq -r '"\(.reasons) \(.ai_status)"')" && [ "$(count email_drafts message_id "$2")" = "$8" ] && echo true)" "HTTP $CODE triage row $(tri "$2"); draft rows $(count email_drafts message_id "$2")"
+}
+ecase "email (AI stubbed): AI outage -> kept, goes to a person, no draft" s-$RUN-1 'Battery question' 'Can I add a battery later?' error person ai_unavailable 0
+ecase "email (AI stubbed): AI drafts a reply with a link -> draft refused, goes to a person" s-$RUN-2 'Battery question' 'Can I add a battery later?' "$(tstub support normal 'Yes! Details at https://acme-deals.example/battery' '["faq-08"]')" person 'contains a link' 0
+ecase "email (AI stubbed): AI promises a refund amount the FAQ never mentions -> draft refused" s-$RUN-3 'Overcharged' 'I think I was overcharged.' "$(tstub support normal 'Sorry about that, we will refund 350 dollars this week.' '["faq-01"]')" person 'numbers not in the FAQ' 0
+ecase "email (AI stubbed): billing is always a person's call, even with a clean draft" s-$RUN-4 'Invoice query' 'Why is my invoice different?' "$(tstub billing normal 'We reply within one business day.' '["faq-01"]')" person billing_goes_to_a_person 0
+SUBJ="Isolator question $RUN"
+ecase "email (AI stubbed): AI calls it routine but the email mentions smoke -> urgent, to a person, team alerted" s-$RUN-5 "$SUBJ" 'There is smoke coming out of the roof isolator, is that normal?' "$(tstub support normal 'Rain usually keeps them clean.' '["faq-10"]')" person safety_words 0
+nt=$(rows notifications name "$SUBJ")
+expect "email: the urgent email wrote an alert for the team" "$([ "$(jq length <<<"$nt")" = 1 ] && [ "$(jq -r '.[0].kind' <<<"$nt")" = urgent_email ] && echo true)" "notifications $(jq -c '.[0]|{kind,email,summary}' <<<"$nt")"
+node scripts/stub-variant.mjs delete email-triage "Triage Email" >/dev/null
+
+echo "== whatsapp-bot (WhatsApp Cloud API webhook)"
+WU=$BASE/webhook/whatsapp; WSU=$BASE/webhook/whatsapp-stub
+WSEC=$(cat data/whatsapp-app-secret.txt); WVT=$(cat data/whatsapp-verify-token.txt)
+wp() { echo "61498${RUN: -5}$1"; } # a phone number per case; only the send-failure one ends in 0500
+for s in 01 02 03 04 05 06 07 0500; do delrows wa_messages phone "$(wp $s)"; delrows wa_outbox to "$(wp $s)"; delrows notifications name "WhatsApp $(wp $s)"; done
+# wa <phone> <message id> <text | @image | @status>  -> the JSON Meta posts
+wa() { jq -nc --arg p "$1" --arg i "$2" --arg t "$3" '{object:"whatsapp_business_account",entry:[{id:"1",changes:[{field:"messages",value:(if $t=="@status"
+  then {messaging_product:"whatsapp",metadata:{phone_number_id:"1"},statuses:[{id:$i,status:"delivered",recipient_id:$p}]}
+  else {messaging_product:"whatsapp",metadata:{phone_number_id:"1"},contacts:[{profile:{name:"Test Person"},wa_id:$p}],
+    messages:[{from:$p,id:$i,timestamp:"1"} + (if $t=="@image" then {type:"image",image:{id:"img",mime_type:"image/jpeg"}} else {type:"text",text:{body:$t}} end)]} end)}]}]}'; }
+wsend() { # wsend <phone> <message id> <text> [url] [header]  -> signed like Meta signs it (HMAC-SHA256 of the raw body)
+  local b; b=$(wa "$1" "$2" "$3"); post "${4:-$WU}" "$b" "x-hub-signature-256: sha256=$(printf '%s' "$b" | openssl dgst -sha256 -hmac "$WSEC" | sed 's/^.*= //')" ${5:+"$5"}; }
+wcount() { rows wa_messages phone "$1" | jq --arg d "$2" '[.[]|select(.direction==$d)]|length'; }
+outbox() { count wa_outbox to "$1"; }
+r=$(curl -s -w '\n%{http_code}' "$WU?hub.mode=subscribe&hub.verify_token=$WVT&hub.challenge=$RUN"); c2=$(curl -s -o /dev/null -w '%{http_code}' "$WU?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=$RUN")
+expect "whatsapp: Meta's URL check answers the challenge with the right verify token, 403 with a wrong one" "$([ "${r##*$'\n'}" = 200 ] && [ "${r%$'\n'*}" = "$RUN" ] && [ "$c2" = 403 ] && echo true)" "right token HTTP ${r##*$'\n'} body ${r%$'\n'*}; wrong token HTTP $c2"
+W=$(wp 01); post $WU "$(wa $W w-$RUN-0 'hello')"; c1=$CODE
+post $WU "$(wa $W w-$RUN-0 'hello')" "x-hub-signature-256: sha256=$(printf '0%.0s' {1..64})"
+expect "whatsapp: a message without Meta's signature, or with a wrong one -> 401, nothing stored or sent" "$([ "$c1" = 401 ] && [ "$CODE" = 401 ] && [ "$(count wa_messages phone $W)" = 0 ] && [ "$(outbox $W)" = 0 ] && echo true)" "no signature HTTP $c1, wrong signature HTTP $CODE; rows for this number $(count wa_messages phone $W)"
+wsend $W w-$RUN-s @status
+expect "whatsapp: a delivery status update is acknowledged and ignored" "$([ "$CODE" = 200 ] && [ "$(jq -r .status <<<"$BODY")" = ignored ] && echo true)" "HTTP $CODE $BODY"
+if [ -n "$GEM" ]; then
+  wsend $W w-$RUN-1 'Hi, how long does an install take?'
+  expect "whatsapp: REAL Gemini answers from the FAQ and the reply is sent through the API" "$([ "$(jq -r .outcome <<<"$BODY")" = answer ] && [ "$(jq -r .sent <<<"$BODY")" = true ] && [ "$(outbox $W)" = 1 ] && [ "$(wcount $W in)" = 1 ] && [ "$(wcount $W out)" = 1 ] && echo true)" "HTTP $CODE in ${TIME}s $(jq -c '{outcome,reason,sent,reply}' <<<"$BODY"); sent messages $(outbox $W)"
+  wsend $W w-$RUN-1 'Hi, how long does an install take?'
+  expect "whatsapp: Meta resends the same message -> duplicate, answered once" "$([ "$(jq -r .status <<<"$BODY")" = duplicate ] && [ "$(wcount $W in)" = 1 ] && [ "$(outbox $W)" = 1 ] && echo true)" "$BODY; received rows $(wcount $W in), sent messages $(outbox $W)"
+fi
+W=$(wp 02); wsend $W w-$RUN-2a STOP; o1=$(jq -r .reason <<<"$BODY"); n1=$(outbox $W)
+wsend $W w-$RUN-2b 'how do I get a quote?'; o2=$(jq -r .reason <<<"$BODY"); n2=$(outbox $W)
+wsend $W w-$RUN-2c START; o3=$(jq -r .reason <<<"$BODY")
+expect "whatsapp: STOP is confirmed once, then nothing is sent until START" "$([ "$o1" = opted_out ] && [ "$n1" = 1 ] && [ "$o2" = silent:opted_out ] && [ "$n2" = 1 ] && [ "$o3" = opted_in ] && [ "$(outbox $W)" = 2 ] && echo true)" "STOP -> $o1 (sent $n1); question -> $o2 (sent still $n2); START -> $o3 (sent $(outbox $W))"
+W=$(wp 03); for i in $(seq 1 11); do wsend $W w-$RUN-3-$i @image; done
+expect "whatsapp: 11 messages in 10 minutes -> the 11th gets no reply (a flood cannot run up AI or sending costs)" "$([ "$(jq -r .reason <<<"$BODY")" = silent:rate_limited ] && [ "$(outbox $W)" = 10 ] && [ "$(wcount $W in)" = 11 ] && echo true)" "11th -> $(jq -r .reason <<<"$BODY"); received $(wcount $W in), replies sent $(outbox $W)"
+W=$(wp 0500); wsend $W w-$RUN-4 @image; nt=$(rows notifications name "WhatsApp $W")
+expect "whatsapp: the API refuses the reply (outside the 24-hour window) -> logged and the team is alerted" "$([ "$(jq -r .sent <<<"$BODY")" = false ] && grep -q 131047 <<<"$(jq -r .send_error <<<"$BODY")" && [ "$(jq length <<<"$nt")" = 1 ] && [ "$(rows wa_messages phone $W | jq -r '[.[]|select(.direction=="out")][0].reason')" = not_text+send_failed ] && echo true)" "$(jq -c '{reason,sent,send_error}' <<<"$BODY"); alert $(jq -c '.[0]|{kind,summary}' <<<"$nt")"
+W=$(wp 05); wsend $W w-$RUN-5a 'there are sparks coming out of the isolator'; o1=$(jq -c '{reason,reply}' <<<"$BODY")
+wsend $W w-$RUN-5b 'hello, any update?'
+expect "whatsapp: sparks -> safety reply (call 000) and an urgent alert, no AI; then quiet while a person has the chat" "$(grep -q 'handoff:urgent' <<<"$o1" && grep -q 000 <<<"$o1" && [ "$(count notifications name "WhatsApp $W")" = 1 ] && [ "$(jq -r .reason <<<"$BODY")" = silent:person_handling ] && [ "$(outbox $W)" = 1 ] && echo true)" "first $o1; second -> $(jq -r .reason <<<"$BODY"); replies sent $(outbox $W)"
+node scripts/stub-variant.mjs create whatsapp-bot "Answer Message" >/dev/null
+wcase() { # wcase <name> <case> <text> <stub> <expected reason>
+  local W; W=$(wp "$2"); wsend $W w-$RUN-$2 "$3" "$WSU" "x-stub-llm: $4"; local sent; sent=$(rows wa_outbox to $W | jq -r '.[0].text')
+  expect "$1" "$([ "$(jq -r .reason <<<"$BODY")" = "$5" ] && [ "$(count notifications name "WhatsApp $W")" = 1 ] && grep -q "passed it to our team" <<<"$sent" && echo true)" "HTTP $CODE reason=$(jq -r .reason <<<"$BODY"); message sent: \"$sent\"; alerts $(count notifications name "WhatsApp $W")"
+}
+wcase "whatsapp (AI stubbed): AI outage -> the customer is told a person will reply, team alerted" 06 'Can I add a battery later?' error handoff:ai_unavailable
+wcase "whatsapp (AI stubbed): AI answer with a link -> not sent; the hand-over message goes instead" 07 'Any deals on batteries?' '{"answer":"Yes, 20% off at https://acme-deals.example","supported":true,"confidence":0.9,"source_faq_ids":["faq-08"]}' handoff:link_or_contact_details
+node scripts/stub-variant.mjs delete whatsapp-bot "Answer Message" >/dev/null
+
 echo "== error-handler"
 curl -s "$BASE/webhook/error-demo" >/dev/null
 got=0; for i in $(seq 1 15); do got=$(rows workflow_errors workflow_name error-demo | jq 'length'); [ "$got" -ge 1 ] && break; sleep 1; done
@@ -350,7 +453,7 @@ run_eval() {
   local n attempt; EV_RETRY=""
   for attempt in 1 2; do
     EV_BEFORE=$(tlen "$2"); node scripts/run-manual.mjs "$1" "Run Eval" >/dev/null 2>&1
-    for i in $(seq 1 150); do n=$(tlen "$2"); [ "$n" -gt "$EV_BEFORE" ] && break; sleep 2; done
+    for i in $(seq 1 300); do n=$(tlen "$2"); [ "$n" -gt "$EV_BEFORE" ] && break; sleep 2; done
     EV_AFTER=$(tlen "$2")
     EV_LAST=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid "$2")/rows" | jq -c '.data|last|del(.details,.createdAt,.updatedAt)')
     if [ "$attempt" = 1 ] && [ -n "$GEM" ] && [ "$(jq -r .ai_unavailable <<<"$EV_LAST")" != 0 ]; then
@@ -396,17 +499,44 @@ else
   expect "voice eval: runs the 14 transcripts and writes a row to voice_eval_scores" "$([ "$va" -eq $((vb+1)) ] && [ "$(jq -r .total <<<"$vlast")" = 14 ] && echo true)" "voice_eval_scores rows $vb -> $va; $vlast; AI key present: NO"
 fi
 
+echo "== invoice eval (15 documents, dry runs)"
+run_eval invoice-eval invoice_scores; ib=$EV_BEFORE; ia=$EV_AFTER; ilast=$EV_LAST
+if [ -n "$GEM" ]; then
+  expect "invoice eval: 15 documents against the REAL extractor, none lost to an outage, 0 wrong auto-entries, row written to invoice_scores" "$([ "$ia" -eq $((ib+1)) ] && [ "$(jq -r .total <<<"$ilast")" = 15 ] && [ "$(jq -r .ai_unavailable <<<"$ilast")" = 0 ] && [ "$(jq -r .wrong_auto_entries <<<"$ilast")" = 0 ] && echo true)" "${EV_RETRY}invoice_scores rows $ib -> $ia; $ilast"
+  INVOICE_DETAILS=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid invoice_scores)/rows" | jq -r '.data|last|.details|fromjson|.[]|"| \(.n) | \(.file) | \(.kind) | \(.expected) | \(.got // "") | \(.reasons // "") | \(.verdict) |"')
+else
+  expect "invoice eval: runs the 15 documents and writes a row to invoice_scores" "$([ "$ia" -eq $((ib+1)) ] && [ "$(jq -r .total <<<"$ilast")" = 15 ] && echo true)" "invoice_scores rows $ib -> $ia; $ilast; AI key present: NO"
+fi
+
+echo "== email eval (20 emails, dry runs)"
+run_eval email-eval email_scores; eb=$EV_BEFORE; ea=$EV_AFTER; elast=$EV_LAST
+if [ -n "$GEM" ]; then
+  expect "email eval: 20 emails against the REAL triage, none lost to an outage, 0 missed urgent, 0 unsafe drafts, row written to email_scores" "$([ "$ea" -eq $((eb+1)) ] && [ "$(jq -r .total <<<"$elast")" = 20 ] && [ "$(jq -r .ai_unavailable <<<"$elast")" = 0 ] && [ "$(jq -r .missed_urgent <<<"$elast")" = 0 ] && [ "$(jq -r .unsafe_drafts <<<"$elast")" = 0 ] && echo true)" "${EV_RETRY}email_scores rows $eb -> $ea; $elast"
+  EMAIL_DETAILS=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid email_scores)/rows" | jq -r '.data|last|.details|fromjson|.[]|"| \(.n) | \(.subject|gsub("\\|";"/")) | \(.expected) | \(.category // "") / \(.route // "")\(if .urgency == "urgent" then " / urgent" else "" end) | \(.reasons // "") | \(.verdict) |"')
+else
+  expect "email eval: runs the 20 emails and writes a row to email_scores" "$([ "$ea" -eq $((eb+1)) ] && [ "$(jq -r .total <<<"$elast")" = 20 ] && echo true)" "email_scores rows $eb -> $ea; $elast; AI key present: NO"
+fi
+
+echo "== whatsapp eval (10 conversations, 18 messages)"
+run_eval whatsapp-eval wa_scores; wb=$EV_BEFORE; wa2=$EV_AFTER; wlast=$EV_LAST
+if [ -n "$GEM" ]; then
+  expect "whatsapp eval: 18 messages in 10 conversations against the REAL bot, none lost to an outage, 0 wrong answers, row written to wa_scores" "$([ "$wa2" -eq $((wb+1)) ] && [ "$(jq -r .total <<<"$wlast")" = 18 ] && [ "$(jq -r .ai_unavailable <<<"$wlast")" = 0 ] && [ "$(jq -r .wrong_answers <<<"$wlast")" = 0 ] && echo true)" "${EV_RETRY}wa_scores rows $wb -> $wa2; $wlast"
+  WA_DETAILS=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/data-tables/$(tid wa_scores)/rows" | jq -r '.data|last|.details|fromjson|.[]|"| \(.n) | \(.message|gsub("\\|";"/")) | \(.expected) | \(.reason // "") | \(.verdict) |"')
+else
+  expect "whatsapp eval: runs the 18 messages and writes a row to wa_scores" "$([ "$wa2" -eq $((wb+1)) ] && [ "$(jq -r .total <<<"$wlast")" = 18 ] && echo true)" "wa_scores rows $wb -> $wa2; $wlast; AI key present: NO"
+fi
+
 echo "== ops: uptime checks, alerts and the dashboard"
-# checks_run: runs ops-uptime once and waits for its 7 check rows -> OPS_RUN (execution id), OPS_ROWS (its rows)
+# checks_run: runs ops-uptime once and waits for its 10 check rows -> OPS_RUN (execution id), OPS_ROWS (its rows)
 checks_run() {
   OPS_RUN=$(node scripts/run-manual.mjs ops-uptime "Run Checks" | sed -n 's/.*"executionId":"\([0-9]*\)".*/\1/p')
-  for i in $(seq 1 30); do OPS_ROWS=$(rows ops_checks run_id "$OPS_RUN"); [ "$(jq length <<<"$OPS_ROWS")" -ge 7 ] && break; sleep 1; done
+  for i in $(seq 1 30); do OPS_ROWS=$(rows ops_checks run_id "$OPS_RUN"); [ "$(jq length <<<"$OPS_ROWS")" -ge 10 ] && break; sleep 1; done
   sleep 2 # the alert rows are written beside the check rows
 }
 alerts_for() { rows ops_alerts check "$1" | jq -c "[.[]|select(.status==\"$2\")]"; }
 wfapi() { curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/workflows/$(jq -r --arg n "$2" '.[$n]' data/ids.json)/$1"; }
 checks_run
-expect "ops: one run checks all 7 demos, every one answers as expected (no AI call made)" "$([ "$(jq length <<<"$OPS_ROWS")" = 7 ] && [ "$(jq '[.[]|select(.ok=="true")]|length' <<<"$OPS_ROWS")" = 7 ] && echo true)" "run $OPS_RUN: $(jq -r '[.[]|"\(.check) \(.status) in \(.ms) ms"]|join(", ")' <<<"$OPS_ROWS")"
+expect "ops: one run checks all 10 demos, every one answers as expected (no AI call made)" "$([ "$(jq length <<<"$OPS_ROWS")" = 10 ] && [ "$(jq '[.[]|select(.ok=="true")]|length' <<<"$OPS_ROWS")" = 10 ] && echo true)" "run $OPS_RUN: $(jq -r '[.[]|"\(.check) \(.status) in \(.ms) ms"]|join(", ")' <<<"$OPS_ROWS")"
 open_before=$(alerts_for ai-lead-qualify open | jq length)
 d=$(wfapi deactivate ai-lead-qualify); checks_run; r1=$(jq -c '.[]|select(.check=="ai-lead-qualify")|{status,ok,error}' <<<"$OPS_ROWS"); o1=$(alerts_for ai-lead-qualify open | jq length)
 expect "ops: a demo taken offline fails its check, but one failure opens no alert" "$([ "$d" = 200 ] && [ "$(jq -r .ok <<<"$r1")" = false ] && [ "$o1" = "$open_before" ] && echo true)" "deactivate HTTP $d; check row $r1; open alerts $open_before -> $o1"
@@ -431,7 +561,7 @@ own_v=$(curl -s -H "X-N8N-API-KEY: $KEY" "$BASE/api/v1/executions?workflowId=$VI
 dash_v=$(jq '.ai.by_workflow[]|select(.workflow=="voice-agent")|.calls' <<<"$DASH")
 usd_ok=$(jq '.ai | ((((.input_tokens * 0.30 + .output_tokens * 2.50) / 1e6) * 10000 | round) / 10000) as $c | ($c - .paid_tier_usd | fabs) < 0.0002' <<<"$DASH")
 if [ -n "$GEM" ]; then
-  expect "dashboard: Gemini calls and tokens counted from the execution log, priced at paid-tier rates" "$([ "$dash_v" = "$own_v" ] && [ "$(jq '.ai.calls' <<<"$DASH")" -ge 74 ] && [ "$(jq '.ai.output_tokens' <<<"$DASH")" -gt 0 ] && [ "$usd_ok" = true ] && echo true)" "voice-agent: dashboard $dash_v calls, separate count $own_v; all AI workflows: $(jq -r '.ai|"\(.calls) calls, \(.input_tokens) input + \(.output_tokens) output tokens = $\(.paid_tier_usd) at paid-tier prices (actual $\(.actual_usd), free tier)"' <<<"$DASH"); at least 74 expected from this run's evals"
+  expect "dashboard: Gemini calls and tokens counted from the execution log, priced at paid-tier rates" "$([ "$dash_v" = "$own_v" ] && [ "$(jq '.ai.calls' <<<"$DASH")" -ge 120 ] && [ "$(jq '.ai.output_tokens' <<<"$DASH")" -gt 0 ] && [ "$usd_ok" = true ] && echo true)" "voice-agent: dashboard $dash_v calls, separate count $own_v; all AI workflows: $(jq -r '.ai|"\(.calls) calls, \(.input_tokens) input + \(.output_tokens) output tokens = $\(.paid_tier_usd) at paid-tier prices (actual $\(.actual_usd), free tier)"' <<<"$DASH"); at least 120 expected from this run's evals"
 else
   expect "dashboard: Gemini calls counted from the execution log" "$([ "$dash_v" = "$own_v" ] && echo true)" "voice-agent: dashboard $dash_v calls, separate count $own_v; AI key present: NO"
 fi
@@ -473,6 +603,22 @@ expect "dashboard: the web page loads behind the login" "$(grep -qi 'text/html' 
     echo; echo "## Voice eval calls (latest run, real Gemini)"; echo
     echo "| # | Caller's first words | Expected | Outcome | Call back booked | Verdict |"; echo "|---|---|---|---|---|---|"
     printf '%s\n' "$VOICE_DETAILS"
+  fi
+  if [ -n "${INVOICE_DETAILS:-}" ]; then
+    echo; echo "## Invoice eval documents (latest run, real Gemini, dry runs)"; echo
+    echo "| # | File | Kind | Expected | Got | Reasons | Verdict |"; echo "|---|---|---|---|---|---|---|"
+    printf '%s\n' "$INVOICE_DETAILS"
+  fi
+  if [ -n "${EMAIL_DETAILS:-}" ]; then
+    echo; echo "## Email eval (latest run, real Gemini, dry runs)"; echo
+    echo "| # | Subject | Expected (category / route) | Got | Reasons | Verdict |"; echo "|---|---|---|---|---|---|"
+    printf '%s\n' "$EMAIL_DETAILS"
+  fi
+  if [ -n "${WA_DETAILS:-}" ]; then
+    echo; echo "## WhatsApp eval messages (latest run, real Gemini)"; echo
+    echo "Messages in the same conversation are sent in order to the same number, so follow-ups only make sense with the earlier ones."; echo
+    echo "| # | Message | Expected | Got | Verdict |"; echo "|---|---|---|---|---|"
+    printf '%s\n' "$WA_DETAILS"
   fi
 } > $OUT
 echo "PASS=$PASS FAIL=$FAIL -> $OUT"
