@@ -5,6 +5,11 @@
 # and all seven evals pace one question every 8 s for the Gemini free tier).
 set -u
 cd "$(dirname "$0")/.."
+# data/ is git-ignored and made by scripts/setup.mjs; a fresh checkout has none, and without it every signed case fails
+# with 401/403 after a 35-minute run. Stop before any request instead.
+for f in ids.json approver-key.txt voice-secret.txt dashboard-password.txt whatsapp-app-secret.txt whatsapp-verify-token.txt; do
+  [ -s "data/$f" ] || { echo "data/$f is missing: run node scripts/setup.mjs, or copy data/ from the checkout that ran it" >&2; exit 2; }
+done
 BASE=http://localhost:5678
 SECRETS=$HOME/Projects/claude-memory/claude-config/secrets.mjs
 KEY=$(node "$SECRETS" get N8N_LOCAL_API_KEY)
