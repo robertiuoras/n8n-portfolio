@@ -1,0 +1,21 @@
+{
+  "about": "Demo payloads for missed-call-text-back, shaped like a phone provider's call-status callback. Fake numbers from the ranges Australia reserves for fiction. Posted to /webhook/missed-call/callback. 'expect' is what the Check Call step must decide (checked offline by tests/sms-workflows.test.mjs); the never-text, STOP and 15-minute rules need the Data Tables and are checked by the Decide step cases below.",
+  "cases": [
+    { "name": "missed call from a mobile", "body": { "from": "0491 570 156", "to": "+61755500001", "called_at": "2026-10-20T09:00:00+10:00", "call_status": "no-answer" }, "expect": { "ok": true, "action": "go", "caller": "+61491570156", "is_mobile": true } },
+    { "name": "busy signal, +61 form", "body": { "from": "+61491570157", "to": "+61755500001", "called_at": "2026-10-20T09:05:00+10:00", "call_status": "busy" }, "expect": { "ok": true, "action": "go", "caller": "+61491570157", "is_mobile": true } },
+    { "name": "missed call from a landline: no text, still a lead", "body": { "from": "(07) 5550 0222", "to": "+61755500001", "called_at": "2026-10-20T09:10:00+10:00", "call_status": "no-answer" }, "expect": { "ok": true, "action": "go", "caller": "+61755500222", "is_mobile": false } },
+    { "name": "withheld number", "body": { "from": "anonymous", "to": "+61755500001", "called_at": "2026-10-20T09:15:00+10:00", "call_status": "no-answer" }, "expect": { "ok": true, "action": "ignore", "reason": "private_or_withheld_number" } },
+    { "name": "empty caller id", "body": { "from": "private", "to": "+61755500001", "called_at": "2026-10-20T09:16:00+10:00", "call_status": "no-answer" }, "expect": { "ok": true, "action": "ignore", "reason": "private_or_withheld_number" } },
+    { "name": "call was answered", "body": { "from": "0491 570 158", "to": "+61755500001", "called_at": "2026-10-20T09:20:00+10:00", "call_status": "completed" }, "expect": { "ok": true, "action": "ignore" } },
+    { "name": "not an Australian number (too short to be one)", "body": { "from": "+6491234", "to": "+61755500001", "called_at": "2026-10-20T09:25:00+10:00", "call_status": "no-answer" }, "expect": { "ok": true, "action": "ignore", "reason": "not_a_number_we_can_text_back" } },
+    { "name": "missing fields", "body": { "from": "0491 570 159" }, "expect": { "ok": false, "reason_contains": "called_at is required" } }
+  ],
+  "decide_cases": [
+    { "name": "caller on the never-text list", "never_text": [{ "id": 1, "phone": "+61491570737" }], "stop_list": [], "recent": [], "caller": "+61491570737", "called_at": "2026-10-20T09:00:00+10:00", "expect": { "suppress": true, "reason": "on_never_text_list" } },
+    { "name": "caller on the STOP list", "never_text": [], "stop_list": [{ "id": 2, "phone": "+61491570110" }], "recent": [], "caller": "+61491570110", "called_at": "2026-10-20T09:00:00+10:00", "expect": { "suppress": true, "reason": "on_stop_list" } },
+    { "name": "texted 10 minutes ago: suppressed", "never_text": [], "stop_list": [], "recent": [{ "id": 3, "status": "texted", "called_at": "2026-10-20T08:50:00+10:00" }], "caller": "+61491570156", "called_at": "2026-10-20T09:00:00+10:00", "expect": { "suppress": true, "reason": "already_texted_within_15_minutes" } },
+    { "name": "texted 20 minutes ago: texted again", "never_text": [], "stop_list": [], "recent": [{ "id": 3, "status": "texted", "called_at": "2026-10-20T08:40:00+10:00" }], "caller": "+61491570156", "called_at": "2026-10-20T09:00:00+10:00", "expect": { "suppress": false } },
+    { "name": "an earlier text that failed does not block a retry", "never_text": [], "stop_list": [], "recent": [{ "id": 4, "status": "text_failed", "called_at": "2026-10-20T08:58:00+10:00" }], "caller": "+61491570156", "called_at": "2026-10-20T09:00:00+10:00", "expect": { "suppress": false } },
+    { "name": "nothing on file", "never_text": [], "stop_list": [], "recent": [], "caller": "+61491570313", "called_at": "2026-10-20T09:00:00+10:00", "expect": { "suppress": false } }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "about": "Demo payloads for review-booster. Fake customers, numbers from the ranges Australia reserves for fiction, emails at example.com. Posted to /webhook/review-booster/job-completed. 'expect' is what the Check Input step must decide (checked offline by tests/sms-workflows.test.mjs).",
+  "cases": [
+    { "name": "mobile customer, gets a text", "body": { "job_id": "DEMO-JOB-1001", "customer_name": "Jamie Demo", "customer_mobile": "0491 570 006", "customer_email": "jamie.demo@example.com", "completed_at": "2026-10-20T10:15:00+10:00" }, "expect": { "ok": true, "channel": "sms", "phone": "+61491570006" } },
+    { "name": "mobile in +61 form", "body": { "job_id": "DEMO-JOB-1002", "customer_name": "Sam Demo", "customer_mobile": "+61 491 570 156", "completed_at": "2026-10-20T11:00:00+10:00" }, "expect": { "ok": true, "channel": "sms", "phone": "+61491570156" } },
+    { "name": "no mobile, falls back to email", "body": { "job_id": "DEMO-JOB-1003", "customer_name": "Alex Demo", "customer_email": "alex.demo@example.com", "completed_at": "2026-10-20T12:00:00+10:00" }, "expect": { "ok": true, "channel": "email", "phone": "" } },
+    { "name": "landline only plus email, falls back to email", "body": { "job_id": "DEMO-JOB-1004", "customer_name": "Pat Demo", "customer_mobile": "(07) 5550 0123", "customer_email": "pat.demo@example.com", "completed_at": "2026-10-20T12:30:00+10:00" }, "expect": { "ok": true, "channel": "email", "phone": "" } },
+    { "name": "number on the STOP list (seed it with sms-stop-sample.json)", "body": { "job_id": "DEMO-JOB-1005", "customer_name": "Robin Demo", "customer_mobile": "0491 570 110", "completed_at": "2026-10-20T13:00:00+10:00" }, "expect": { "ok": true, "channel": "sms", "phone": "+61491570110" } },
+    { "name": "same job sent twice: second call is a duplicate (needs the Data Table)", "body": { "job_id": "DEMO-JOB-1001", "customer_name": "Jamie Demo", "customer_mobile": "0491 570 006", "completed_at": "2026-10-20T10:15:00+10:00" }, "expect": { "ok": true, "channel": "sms", "phone": "+61491570006" } },
+    { "name": "missing job_id", "body": { "customer_name": "Kim Demo", "customer_mobile": "0491 570 157", "completed_at": "2026-10-20T10:15:00+10:00" }, "expect": { "ok": false, "reason_contains": "job_id is required" } },
+    { "name": "no way to reach the customer", "body": { "job_id": "DEMO-JOB-1006", "customer_name": "Lee Demo", "completed_at": "2026-10-20T10:15:00+10:00" }, "expect": { "ok": false, "reason_contains": "customer_mobile or a customer_email" } },
+    { "name": "landline and no email", "body": { "job_id": "DEMO-JOB-1007", "customer_name": "Cam Demo", "customer_mobile": "07 5550 0456", "completed_at": "2026-10-20T10:15:00+10:00" }, "expect": { "ok": false, "reason_contains": "not an Australian mobile" } },
+    { "name": "bad date and bad email", "body": { "job_id": "DEMO-JOB-1008", "customer_name": "Dana Demo", "customer_email": "not-an-email", "completed_at": "yesterday" }, "expect": { "ok": false, "reason_contains": "completed_at is required" } }
+  ]
+}

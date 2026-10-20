@@ -1,0 +1,15 @@
+{
+  "about": "Demo inbound texts for sms-stop-handler, posted to /webhook/sms-inbound/messages. Fake numbers from the ranges Australia reserves for fiction. 'expect' is what the Read Message step must decide (checked offline by tests/sms-workflows.test.mjs).",
+  "cases": [
+    { "name": "STOP", "body": { "from": "0491 570 110", "to": "+61755500001", "body": "STOP" }, "expect": { "ok": true, "is_stop": true, "phone": "+61491570110" } },
+    { "name": "lower case with a full stop", "body": { "from": "+61491570737", "to": "+61755500001", "body": "stop." }, "expect": { "ok": true, "is_stop": true, "phone": "+61491570737" } },
+    { "name": "Unsubscribe", "body": { "from": "0491 570 158", "to": "+61755500001", "body": " Unsubscribe " }, "expect": { "ok": true, "is_stop": true } },
+    { "name": "STOPALL", "body": { "from": "0491 570 159", "to": "+61755500001", "body": "STOPALL" }, "expect": { "ok": true, "is_stop": true } },
+    { "name": "CANCEL", "body": { "from": "0491 570 156", "to": "+61755500001", "body": "cancel" }, "expect": { "ok": true, "is_stop": true } },
+    { "name": "END", "body": { "from": "0491 570 156", "to": "+61755500001", "body": "End" }, "expect": { "ok": true, "is_stop": true } },
+    { "name": "QUIT", "body": { "from": "0491 570 156", "to": "+61755500001", "body": "QUIT" }, "expect": { "ok": true, "is_stop": true } },
+    { "name": "an ordinary reply is not an opt-out", "body": { "from": "0491 570 157", "to": "+61755500001", "body": "Tap is leaking, can you come Thursday?" }, "expect": { "ok": true, "is_stop": false } },
+    { "name": "a word that only contains stop", "body": { "from": "0491 570 157", "to": "+61755500001", "body": "Please don't stop by before 9" }, "expect": { "ok": true, "is_stop": false } },
+    { "name": "no sender", "body": { "body": "STOP" }, "expect": { "ok": false, "reason_contains": "from must be a phone number" } }
+  ]
+}

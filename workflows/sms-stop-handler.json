@@ -1,0 +1,476 @@
+{
+  "name": "sms-stop-handler",
+  "nodes": [
+    {
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "parameters": {
+        "content": "**Opt-outs.** A reply of STOP (any case; also STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT) puts the number on the `sms_optout` Data Table and sends one confirmation. review-booster and missed-call-text-back both check that table before any text goes out. Point your SMS provider's \"incoming message\" webhook here.\n\n**Swapping the stand-in for a real SMS service (Twilio, ClickSend, MessageMedia):** in the \"Config\" node change `sms_api_url` to the provider's send-message URL, then on each \"Send ...\" HTTP Request node attach that provider's credential (an n8n credential you create, shown here as \"SMS provider (replace me)\") and adjust the JSON field names (`to`, `from`, `body`) to the provider's. The checks, duplicate handling and logging around it do not change.",
+        "width": 640,
+        "height": 240,
+        "color": 7
+      },
+      "id": "e5b4e35b-1428-9f60-8e76-090c6796c157",
+      "position": [
+        0,
+        -330
+      ]
+    },
+    {
+      "name": "Inbound SMS",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "54640d6c-885f-8bc7-e851-c57bfd44b5a0",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sms-inbound/messages",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "5e1372e2-7ac5-be20-d7af-a8e0dfd93f8b",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-business_name",
+              "name": "business_name",
+              "value": "Gold Coast Plumbing Co (demo)",
+              "type": "string"
+            },
+            {
+              "id": "cfg-sender_id",
+              "name": "sender_id",
+              "value": "GCPlumbing",
+              "type": "string"
+            },
+            {
+              "id": "cfg-sms_api_url",
+              "name": "sms_api_url",
+              "value": "http://localhost:5678/webhook/mock-sms/messages",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "b7716175-8077-94f9-aedf-d4930a2bd548",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Read Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst digits = (v) => String(v || '').replace(/\\D/g, '');\nconst phoneKind = (v) => { const d = digits(v);\n  if (/^04\\d{8}$/.test(d)) return { e164: '+61' + d.slice(1), mobile: true };\n  if (/^614\\d{8}$/.test(d)) return { e164: '+' + d, mobile: true };\n  if (/^0[2378]\\d{8}$/.test(d)) return { e164: '+61' + d.slice(1), mobile: false };\n  if (/^61[2378]\\d{8}$/.test(d)) return { e164: '+' + d, mobile: false };\n  return { e164: '', mobile: false }; };\nconst b = $json.body || {};\nconst from = phoneKind(b.from ?? b.From); const text = String(b.body ?? b.Body ?? '').trim();\nconst errs = [];\nif (!from.e164) errs.push('from must be a phone number');\nif (!text) errs.push('body is required');\nconst m = text.match(/^\\s*(STOP|STOPALL|UNSUBSCRIBE|CANCEL|END|QUIT)[\\s.!]*$/i);\nconst word = m ? m[1].toUpperCase() : '';\nconst isStop = !!m;\nreturn { json: { ok: errs.length === 0, errors: errs, phone: from.e164, text, is_stop: errs.length === 0 && isStop, keyword: word } };"
+      },
+      "id": "5be7f618-6eda-0ede-95b1-aeac94ad4a63",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "236392a5-44d5-34b5-993b-5068f8f1d35d",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7a7adb48-a874-0069-2dd1-448dd52ca8bc",
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'rejected', reason: $('Read Message').first().json.errors.join('; ') }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "db723895-551b-158d-dbc4-87cd1abd8a8f",
+      "position": [
+        1040,
+        460
+      ]
+    },
+    {
+      "name": "Is STOP?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1c7cc6ad-025d-7248-2ce9-266711c3b5ff",
+              "leftValue": "={{ $json.is_stop }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "40c29165-719c-5ad7-f734-3effb56d8552",
+      "position": [
+        1040,
+        300
+      ]
+    },
+    {
+      "name": "Respond Ignored",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'ignored', reason: 'not an opt-out message' }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "dac00a0b-0450-4559-6029-363084b85286",
+      "position": [
+        1300,
+        460
+      ]
+    },
+    {
+      "name": "Already Opted Out?",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "sms_optout"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "phone",
+              "condition": "eq",
+              "keyValue": "={{ $('Read Message').first().json.phone }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "d7f938ba-63f8-9146-7311-208c42b5d799",
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "name": "Is Listed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3ef325ca-5e13-1bd2-a92a-80058d3c567c",
+              "leftValue": "={{ $json.id !== undefined && $json.id !== null }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "0955de75-c889-6ffc-1a6e-be3494a8c081",
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "name": "Respond Already",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'already_opted_out', note: 'no second confirmation sent' }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "70a7487a-d39e-77ee-c1bf-05807a4b607a",
+      "position": [
+        1820,
+        160
+      ]
+    },
+    {
+      "name": "Save Opt-Out",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "sms_optout"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "phone": "={{ $('Read Message').first().json.phone }}",
+            "keyword": "={{ $('Read Message').first().json.keyword }}",
+            "source": "inbound SMS",
+            "at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "84b8578c-e0e7-165e-8241-a203191a90de",
+      "position": [
+        1820,
+        400
+      ]
+    },
+    {
+      "name": "Confirm Opt-Out",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.sms_api_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $('Read Message').first().json.phone, from: $('Config').first().json.sender_id, body: $('Config').first().json.business_name + ': you are opted out and will not get any more texts from us.' }) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "38c2b147-a1ab-cd6e-58b3-3d4f73cb74dc",
+      "position": [
+        2080,
+        400
+      ]
+    },
+    {
+      "name": "Respond Recorded",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'opted_out', phone: $('Read Message').first().json.phone, confirmation_sent: $json.statusCode >= 200 && $json.statusCode < 300 }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "e0be5432-b036-29bc-0f64-a5981aa3c497",
+      "position": [
+        2340,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Inbound SMS": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Read Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Message": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Is STOP?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is STOP?": {
+      "main": [
+        [
+          {
+            "node": "Already Opted Out?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Ignored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Opted Out?": {
+      "main": [
+        [
+          {
+            "node": "Is Listed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Listed?": {
+      "main": [
+        [
+          {
+            "node": "Respond Already",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Opt-Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Opt-Out": {
+      "main": [
+        [
+          {
+            "node": "Confirm Opt-Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirm Opt-Out": {
+      "main": [
+        [
+          {
+            "node": "Respond Recorded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__",
+    "timezone": "Australia/Brisbane"
+  }
+}
