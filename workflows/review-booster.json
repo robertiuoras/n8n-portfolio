@@ -1,0 +1,792 @@
+{
+  "name": "review-booster",
+  "nodes": [
+    {
+      "name": "Note: everyone is asked",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "parameters": {
+        "content": "**Every customer is asked.** Each completed job gets one review request. Nothing in this workflow picks customers by how they felt about the job, and nothing should be added that does: Google does not allow asking only some customers for reviews. The text links straight to the business's Google review page (`review_link` in Config).",
+        "width": 520,
+        "height": 200,
+        "color": 3
+      },
+      "id": "edc33001-7468-4895-e351-094c621a45ad",
+      "position": [
+        0,
+        -380
+      ]
+    },
+    {
+      "name": "Note: wiring and swap",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "parameters": {
+        "content": "**Trigger:** POST a JSON body `{job_id, customer_name, customer_mobile, customer_email, completed_at}` to this webhook when a job is marked complete. Any job tool that can send a webhook (ServiceM8, Tradify, simPRO, Fergus, AroFlo, Jobber) can be pointed at it, or upload a CSV and post one row per job.\n\n**Swapping the stand-in for a real SMS service (Twilio, ClickSend, MessageMedia):** in the \"Config\" node change `sms_api_url` to the provider's send-message URL, then on each \"Send ...\" HTTP Request node attach that provider's credential (an n8n credential you create, shown here as \"SMS provider (replace me)\") and adjust the JSON field names (`to`, `from`, `body`) to the provider's. The checks, duplicate handling and logging around it do not change.\n\nThe email step uses an n8n SMTP credential shown as \"Email (replace me)\".",
+        "width": 640,
+        "height": 300,
+        "color": 7
+      },
+      "id": "6366c981-53d9-3e2c-422d-0976097768f9",
+      "position": [
+        560,
+        -380
+      ]
+    },
+    {
+      "name": "Job Completed",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "1918dce1-d90d-39ed-fa39-3b31b3238253",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "review-booster/job-completed",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a232b556-c62c-03f5-b784-559e2597d967",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-business_name",
+              "name": "business_name",
+              "value": "Gold Coast Plumbing Co (demo)",
+              "type": "string"
+            },
+            {
+              "id": "cfg-review_link",
+              "name": "review_link",
+              "value": "https://example.com/demo-google-review",
+              "type": "string"
+            },
+            {
+              "id": "cfg-sender_id",
+              "name": "sender_id",
+              "value": "GCPlumbing",
+              "type": "string"
+            },
+            {
+              "id": "cfg-delay_seconds",
+              "name": "delay_seconds",
+              "value": 0,
+              "type": "number"
+            },
+            {
+              "id": "cfg-sms_api_url",
+              "name": "sms_api_url",
+              "value": "http://localhost:5678/webhook/mock-sms/messages",
+              "type": "string"
+            },
+            {
+              "id": "cfg-email_from",
+              "name": "email_from",
+              "value": "jobs@example.com",
+              "type": "string"
+            },
+            {
+              "id": "cfg-alert_recipient",
+              "name": "alert_recipient",
+              "value": "+61491570313",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "4bdf45fb-5136-6e49-5369-b0d0551fd583",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Check Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst digits = (v) => String(v || '').replace(/\\D/g, '');\nconst phoneKind = (v) => { const d = digits(v);\n  if (/^04\\d{8}$/.test(d)) return { e164: '+61' + d.slice(1), mobile: true };\n  if (/^614\\d{8}$/.test(d)) return { e164: '+' + d, mobile: true };\n  if (/^0[2378]\\d{8}$/.test(d)) return { e164: '+61' + d.slice(1), mobile: false };\n  if (/^61[2378]\\d{8}$/.test(d)) return { e164: '+' + d, mobile: false };\n  return { e164: '', mobile: false }; };\nconst b = $json.body || {};\nconst jobId = String(b.job_id ?? '').trim(); const name = String(b.customer_name ?? '').trim();\nconst email = String(b.customer_email ?? '').trim(); const mobileRaw = String(b.customer_mobile ?? '').trim(); const at = String(b.completed_at ?? '').trim();\nconst p = phoneKind(mobileRaw); const emailOk = /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email);\nconst errs = [];\nif (!jobId) errs.push('job_id is required');\nif (!name) errs.push('customer_name is required');\nif (!at || Number.isNaN(Date.parse(at))) errs.push('completed_at is required, as a date and time like 2026-10-20T10:15:00+10:00');\nif (email && !emailOk) errs.push('customer_email is not a valid email address');\nif (!p.mobile && !emailOk && !email) errs.push(mobileRaw ? 'customer_mobile is not an Australian mobile number, and no customer_email was given to use instead' : 'give a customer_mobile or a customer_email');\nreturn { json: { ok: errs.length === 0, errors: errs, job_id: jobId, customer_name: name, first_name: name.split(/\\s+/)[0], phone: p.mobile ? p.e164 : '',\n  email: emailOk ? email : '', channel: p.mobile ? 'sms' : 'email', completed_at: at } };"
+      },
+      "id": "32602dcb-001a-bc50-24a7-93de12c738c3",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "236392a5-44d5-34b5-993b-5068f8f1d35d",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4970d335-9a3c-fe07-51c6-213a425dc107",
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'rejected', reason: $('Check Input').first().json.errors.join('; ') }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "c2e1d969-aa32-4da7-3919-cd66bded86a8",
+      "position": [
+        1040,
+        480
+      ]
+    },
+    {
+      "name": "Already Asked?",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "review_requests"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Input').first().json.job_id }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "a51768fe-f483-a3db-e065-8a2106ed1fda",
+      "position": [
+        1040,
+        300
+      ]
+    },
+    {
+      "name": "Is Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f950e591-2707-8e74-956f-e6090ab97c3b",
+              "leftValue": "={{ $json.id !== undefined && $json.id !== null }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1f9425d1-ed68-0593-4b83-12137c10aea2",
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "name": "Respond Duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'duplicate', job_id: $('Check Input').first().json.job_id, note: 'this job has already been asked, nothing sent' }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "50920a84-4ee3-7c54-7d03-70eed65e7a99",
+      "position": [
+        1560,
+        160
+      ]
+    },
+    {
+      "name": "Claim Job",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "review_requests"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "job_id": "={{ $('Check Input').first().json.job_id }}",
+            "customer_name": "={{ $('Check Input').first().json.customer_name }}",
+            "contact": "={{ $('Check Input').first().json.phone || $('Check Input').first().json.email }}",
+            "channel": "={{ $('Check Input').first().json.channel }}",
+            "status": "queued",
+            "detail": "",
+            "at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "3f123158-ddd9-00a0-7a6c-7658737924ce",
+      "position": [
+        1560,
+        400
+      ]
+    },
+    {
+      "name": "Respond Queued",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'queued', job_id: $('Check Input').first().json.job_id, channel: $('Check Input').first().json.channel, delay_seconds: $('Config').first().json.delay_seconds }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "052ad4c3-4cce-bc0a-4af7-1d324c24bf7b",
+      "position": [
+        1820,
+        400
+      ]
+    },
+    {
+      "name": "Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "webhookId": "daaf5e9d-8a31-61ff-30dd-2d2934de085d",
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $('Config').first().json.delay_seconds }}",
+        "unit": "seconds"
+      },
+      "id": "dedfd291-d7f9-9d8b-519c-0224b4d14602",
+      "position": [
+        2080,
+        400
+      ]
+    },
+    {
+      "name": "Opt-Out Lookup",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "sms_optout"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "phone",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Input').first().json.phone || 'no-phone' }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "2ad478de-3d25-61ec-f8e0-6680e3081d7d",
+      "position": [
+        2340,
+        400
+      ]
+    },
+    {
+      "name": "Opted Out?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "16fc6045-3733-c50c-c1b9-dafe8ddb35a2",
+              "leftValue": "={{ $json.id !== undefined && $json.id !== null }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d9a83a95-1593-9253-0840-b18d75a81908",
+      "position": [
+        2600,
+        400
+      ]
+    },
+    {
+      "name": "Mark Skipped",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "review_requests"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Input').first().json.job_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "skipped_opt_out",
+            "detail": "number is on the STOP list, nothing sent"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "30b0fe4b-17e4-246f-ac65-b6ef5309acac",
+      "position": [
+        2860,
+        280
+      ]
+    },
+    {
+      "name": "Has Mobile?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "abf45046-2913-eec3-2fde-c9d6ba64aec2",
+              "leftValue": "={{ $('Check Input').first().json.channel === 'sms' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "515bc5b6-67aa-2282-9483-b35b5fcb9fa2",
+      "position": [
+        2860,
+        520
+      ]
+    },
+    {
+      "name": "Send Review SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.sms_api_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $('Check Input').first().json.phone, from: $('Config').first().json.sender_id, body: 'Hi ' + $('Check Input').first().json.first_name + ', thanks for choosing ' + $('Config').first().json.business_name + '. Would you leave us a quick Google review? ' + $('Config').first().json.review_link + ' Reply STOP to opt out.' }) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "a2e12cdc-ac2d-d7db-2c8b-6be0320693aa",
+      "position": [
+        3120,
+        440
+      ]
+    },
+    {
+      "name": "Mark SMS Result",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "review_requests"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Input').first().json.job_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "={{ $json.statusCode >= 200 && $json.statusCode < 300 ? 'sms_sent' : 'sms_failed' }}",
+            "detail": "={{ 'SMS API answered ' + ($json.statusCode ?? 'nothing') }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "977a4e16-1e53-03be-686e-8b4a502af702",
+      "position": [
+        3380,
+        440
+      ]
+    },
+    {
+      "name": "Send Review Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "smtp": {
+          "name": "Email (replace me)"
+        }
+      },
+      "parameters": {
+        "fromEmail": "={{ $('Config').first().json.email_from }}",
+        "toEmail": "={{ $('Check Input').first().json.email }}",
+        "subject": "={{ 'Thanks for choosing ' + $('Config').first().json.business_name }}",
+        "emailFormat": "text",
+        "text": "={{ 'Hi ' + $('Check Input').first().json.first_name + ',\\n\\nThanks for choosing ' + $('Config').first().json.business_name + '. Would you leave us a quick Google review? ' + $('Config').first().json.review_link + '\\n\\nIf you would rather not get messages like this, reply and say STOP.' }}",
+        "options": {}
+      },
+      "id": "c4d7b708-7434-40a4-5be5-80ce3eb3d3e1",
+      "position": [
+        3120,
+        620
+      ]
+    },
+    {
+      "name": "Mark Email Result",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "review_requests"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Input').first().json.job_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "={{ $json.error ? 'email_failed' : 'email_sent' }}",
+            "detail": "={{ $json.error ? String($json.error.message || $json.error).slice(0, 200) : 'email handed to the mail server' }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "a4623f42-10c0-8e18-0770-52c9e6c09bf0",
+      "position": [
+        3380,
+        620
+      ]
+    }
+  ],
+  "connections": {
+    "Job Completed": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Check Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Input": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Already Asked?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Asked?": {
+      "main": [
+        [
+          {
+            "node": "Is Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Respond Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Claim Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Job": {
+      "main": [
+        [
+          {
+            "node": "Respond Queued",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Queued": {
+      "main": [
+        [
+          {
+            "node": "Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delay": {
+      "main": [
+        [
+          {
+            "node": "Opt-Out Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Opt-Out Lookup": {
+      "main": [
+        [
+          {
+            "node": "Opted Out?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Opted Out?": {
+      "main": [
+        [
+          {
+            "node": "Mark Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Has Mobile?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Mobile?": {
+      "main": [
+        [
+          {
+            "node": "Send Review SMS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Review Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Review SMS": {
+      "main": [
+        [
+          {
+            "node": "Mark SMS Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Review Email": {
+      "main": [
+        [
+          {
+            "node": "Mark Email Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__",
+    "timezone": "Australia/Brisbane"
+  }
+}

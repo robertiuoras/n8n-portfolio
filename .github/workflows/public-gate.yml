@@ -22,4 +22,4 @@ jobs:
           CLIENT_NAME_DENYLIST: ${{ secrets.CLIENT_NAME_DENYLIST }}
         run: node scripts/public-gate.mjs
       - name: Gate tests
-        run: node --test tests/public-gate.test.mjs
+        run: node --test tests/public-gate.test.mjs tests/sms-workflows.test.mjs

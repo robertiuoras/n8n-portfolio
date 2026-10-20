@@ -1,0 +1,211 @@
+{
+  "name": "mock-sms",
+  "nodes": [
+    {
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "parameters": {
+        "content": "**Stand-in SMS service.** Accepts the same kind of request a real SMS API gets (`to`, `from`, `body`) and only stores it in the `sms_outbox` Data Table. **Nothing real is ever sent.** To use a real provider, see the swap note in review-booster.",
+        "width": 520,
+        "height": 120,
+        "color": 7
+      },
+      "id": "2d7e4be9-454a-5b6f-f5b4-7b4aa9529b54",
+      "position": [
+        0,
+        -200
+      ]
+    },
+    {
+      "name": "Send SMS",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "35d04cdd-4dd1-0231-44a8-5a86fd2fca28",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "mock-sms/messages",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "8a855ed2-f655-52c6-32ab-83182100552e",
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "name": "Check Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst b = $json.body || {};\nconst to = String(b.to ?? b.To ?? '').trim(); const from = String(b.from ?? b.From ?? '').trim(); const text = b.body ?? b.Body;\nlet message = '';\nif (!/^\\+\\d{8,15}$/.test(to)) message = 'to must be a phone number in international format, like +61491570006';\nelse if (!from) message = 'from (the sender name or number) is required';\nelse if (typeof text !== 'string' || !text.trim() || text.length > 1600) message = 'body must be text of 1 to 1600 characters';\nreturn { json: { ok: !message, message, to, sender: from, text: typeof text === 'string' ? text : '', sms_id: 'SMmock-' + $execution.id } };"
+      },
+      "id": "6fac884b-1ac5-d9eb-e257-bb9569d31a00",
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "236392a5-44d5-34b5-993b-5068f8f1d35d",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "296ea85e-0656-a274-7dae-3490a024c536",
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "name": "Save To Outbox",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "sms_outbox"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "to": "={{ $('Check Request').first().json.to }}",
+            "sender": "={{ $('Check Request').first().json.sender }}",
+            "body": "={{ $('Check Request').first().json.text }}",
+            "sms_id": "={{ $('Check Request').first().json.sms_id }}",
+            "at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "2a932717-7116-4b49-32ad-0a32cb6e4ead",
+      "position": [
+        780,
+        200
+      ]
+    },
+    {
+      "name": "Respond Sent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ sid: $('Check Request').first().json.sms_id, status: 'queued', to: $('Check Request').first().json.to, from: $('Check Request').first().json.sender }) }}",
+        "options": {
+          "responseCode": 201
+        }
+      },
+      "id": "68565c11-5125-331f-4b8a-1f9955f23f38",
+      "position": [
+        1040,
+        200
+      ]
+    },
+    {
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: $json.message }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "3fdf96d9-b4cf-8471-50ab-ccefafbb303d",
+      "position": [
+        780,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Send SMS": {
+      "main": [
+        [
+          {
+            "node": "Check Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Request": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Save To Outbox",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save To Outbox": {
+      "main": [
+        [
+          {
+            "node": "Respond Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Australia/Brisbane"
+  }
+}

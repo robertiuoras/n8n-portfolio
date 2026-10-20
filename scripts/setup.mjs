@@ -46,6 +46,12 @@ const tables = {
   invoice_scores: { run_at: S, total: N, routing_accuracy: N, field_accuracy: N, right_reason: S, wrong_auto_entries: N, unneeded_reviews: N, ai_unavailable: N, details: S },
   wa_messages: { wa_message_id: S, phone: S, direction: S, type: S, text: S, reason: S, at: S },
   wa_outbox: { to: S, text: S, wamid: S, at: S },
+  sms_outbox: { to: S, sender: S, body: S, sms_id: S, at: S },
+  sms_optout: { phone: S, keyword: S, source: S, at: S },
+  sms_never_text: { phone: S, note: S },
+  review_requests: { job_id: S, customer_name: S, contact: S, channel: S, status: S, detail: S, at: S },
+  missed_call_log: { caller: S, called_at: S, status: S, reason: S, at: S },
+  leads: { caller: S, time: S, status: S, note: S },
   wa_scores: { run_at: S, total: N, turn_accuracy: N, follow_ups_correct: S, wrong_answers: N, unneeded_handoffs: N, ai_unavailable: N, details: S },
 };
 const have = new Set((await api('GET', '/api/v1/data-tables?limit=250')).data.map((t) => t.name));
@@ -126,7 +132,7 @@ const waSecretId = await upsertCred({ name: 'WhatsApp app secret', type: 'crypto
 const waVerify = madeOnce('whatsapp-verify-token.txt', 16);
 const wfs = (await api('GET', '/api/v1/workflows?limit=250')).data;
 const idOf = (name) => wfs.find((w) => w.name === name)?.id;
-const order = ['error-handler', 'mock-crm', 'error-demo', 'chatbot-to-crm', 'ai-lead-qualify', 'support-bot-with-fallback', 'support-bot-eval', 'rag-ingest', 'rag-ask', 'rag-eval', 'guarded-agent', 'guarded-agent-approve', 'guarded-agent-eval', 'voice-agent', 'voice-eval', 'ops-uptime', 'ops-dashboard', 'invoice-extract', 'invoice-eval', 'email-triage', 'email-eval', 'mock-whatsapp', 'whatsapp-bot', 'whatsapp-eval'];
+const order = ['error-handler', 'mock-crm', 'error-demo', 'chatbot-to-crm', 'ai-lead-qualify', 'support-bot-with-fallback', 'support-bot-eval', 'rag-ingest', 'rag-ask', 'rag-eval', 'guarded-agent', 'guarded-agent-approve', 'guarded-agent-eval', 'voice-agent', 'voice-eval', 'ops-uptime', 'ops-dashboard', 'invoice-extract', 'invoice-eval', 'email-triage', 'email-eval', 'mock-whatsapp', 'whatsapp-bot', 'whatsapp-eval', 'mock-sms', 'sms-stop-handler', 'review-booster', 'missed-call-text-back'];
 const ids = {};
 for (const name of order) {
   let txt = fs.readFileSync(path.join(root, 'workflows', name + '.json'), 'utf8');

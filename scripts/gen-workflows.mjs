@@ -1480,4 +1480,208 @@ return [{ json: { run_at: new Date().toISOString(), total: tests.length, turn_ac
   out('whatsapp-eval.json', w);
 }
 
+// ---------- 12. SMS packages: mock-sms, sms-stop-handler, review-booster, missed-call-text-back ----------
+// Demo business and fictional numbers only (0491 570 xxx is the range Australia reserves for fiction). Nothing here sends a
+// real text or email: the SMS API URL in every "Config" node points at mock-sms, which only stores the message.
+const SMS_URL = `${BASE}/webhook/mock-sms/messages`;
+const DEMO_BUSINESS = 'Gold Coast Plumbing Co (demo)';
+const SMS_SWAP = '**Swapping the stand-in for a real SMS service (Twilio, ClickSend, MessageMedia):** in the "Config" node change `sms_api_url` to the provider\'s send-message URL, then on each "Send ..." HTTP Request node attach that provider\'s credential (an n8n credential you create, shown here as "SMS provider (replace me)") and adjust the JSON field names (`to`, `from`, `body`) to the provider\'s. The checks, duplicate handling and logging around it do not change.';
+// Phone helper shared by the Code nodes: Australian mobile (04..) vs landline, in +61 form. Anything else is not a number we text.
+const PHONE_JS = String.raw`
+const digits = (v) => String(v || '').replace(/\D/g, '');
+const phoneKind = (v) => { const d = digits(v);
+  if (/^04\d{8}$/.test(d)) return { e164: '+61' + d.slice(1), mobile: true };
+  if (/^614\d{8}$/.test(d)) return { e164: '+' + d, mobile: true };
+  if (/^0[2378]\d{8}$/.test(d)) return { e164: '+61' + d.slice(1), mobile: false };
+  if (/^61[2378]\d{8}$/.test(d)) return { e164: '+' + d, mobile: false };
+  return { e164: '', mobile: false }; };`;
+const cfgNode = (fields) => ({ name: 'Config', type: 'n8n-nodes-base.set', typeVersion: 3.4,
+  parameters: { assignments: { assignments: Object.entries(fields).map(([name, value]) => ({ id: 'cfg-' + name, name, value, type: typeof value === 'number' ? 'number' : 'string' })) }, includeOtherFields: true, options: {} } });
+const sticky = (name, content, width, height, color = 7) => ({ name, type: 'n8n-nodes-base.stickyNote', typeVersion: 1, parameters: { content, width, height, color } });
+const CFG = (k) => `$('Config').first().json.${k}`;
+const smsCall = (name, { to, body }) => httpReq(name, 'POST', `={{ ${CFG('sms_api_url')} }}`,
+  { body: `={{ JSON.stringify({ to: ${to}, from: ${CFG('sender_id')}, body: ${body} }) }}` });
+const emailNode = (name, { to, subject, text }) => ({ name, type: 'n8n-nodes-base.emailSend', typeVersion: 2.1, onError: 'continueRegularOutput',
+  credentials: { smtp: { name: 'Email (replace me)' } },
+  parameters: { fromEmail: `={{ ${CFG('email_from')} }}`, toEmail: to, subject, emailFormat: 'text', text, options: {} } });
+const smsFooter = ` + ' Reply STOP to opt out.'`;
+
+// 12a. mock SMS API: POST /webhook/mock-sms/messages  {to, from, body}. Stores the message in sms_outbox, sends nothing.
+{
+  const w = new WF('mock-sms', AGENT_TZ);
+  w.add(sticky('Note', '**Stand-in SMS service.** Accepts the same kind of request a real SMS API gets (`to`, `from`, `body`) and only stores it in the `sms_outbox` Data Table. **Nothing real is ever sent.** To use a real provider, see the swap note in review-booster.', 520, 120), [0, -200]);
+  w.add(webhook('Send SMS', 'POST', 'mock-sms/messages'), [0, 300]);
+  w.add(code('Check Request', String.raw`
+const b = $json.body || {};
+const to = String(b.to ?? b.To ?? '').trim(); const from = String(b.from ?? b.From ?? '').trim(); const text = b.body ?? b.Body;
+let message = '';
+if (!/^\+\d{8,15}$/.test(to)) message = 'to must be a phone number in international format, like +61491570006';
+else if (!from) message = 'from (the sender name or number) is required';
+else if (typeof text !== 'string' || !text.trim() || text.length > 1600) message = 'body must be text of 1 to 1600 characters';
+return { json: { ok: !message, message, to, sender: from, text: typeof text === 'string' ? text : '', sms_id: 'SMmock-' + $execution.id } };`), [260, 300]);
+  w.add(iff('Valid?', '={{ $json.ok }}'), [520, 300]);
+  w.add(dtInsert('Save To Outbox', 'sms_outbox', { to: `={{ $('Check Request').first().json.to }}`, sender: `={{ $('Check Request').first().json.sender }}`, body: `={{ $('Check Request').first().json.text }}`, sms_id: `={{ $('Check Request').first().json.sms_id }}`, at: NOW }), [780, 200]);
+  w.add(respond('Respond Sent', J(`{ sid: $('Check Request').first().json.sms_id, status: 'queued', to: $('Check Request').first().json.to, from: $('Check Request').first().json.sender }`), 201), [1040, 200]);
+  w.add(respond('Respond Error', J(`{ error: $json.message }`), 400), [780, 420]);
+  w.link('Send SMS', 'Check Request'); w.link('Check Request', 'Valid?'); w.link('Valid?', 'Save To Outbox', { out: 0 }); w.link('Valid?', 'Respond Error', { out: 1 });
+  w.link('Save To Outbox', 'Respond Sent');
+  out('mock-sms.json', w);
+}
+
+// 12b. sms-stop-handler: the inbound-SMS webhook. POST /webhook/sms-inbound/messages {from, to, body}.
+{
+  const w = new WF('sms-stop-handler', { errorWorkflow: ERR_WF, ...AGENT_TZ });
+  w.add(sticky('Note', '**Opt-outs.** A reply of STOP (any case; also STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT) puts the number on the `sms_optout` Data Table and sends one confirmation. review-booster and missed-call-text-back both check that table before any text goes out. Point your SMS provider\'s "incoming message" webhook here.\n\n' + SMS_SWAP, 640, 240), [0, -330]);
+  w.add(webhook('Inbound SMS', 'POST', 'sms-inbound/messages'), [0, 300]);
+  w.add(cfgNode({ business_name: DEMO_BUSINESS, sender_id: 'GCPlumbing', sms_api_url: SMS_URL }), [260, 300]);
+  w.add(code('Read Message', PHONE_JS + String.raw`
+const b = $json.body || {};
+const from = phoneKind(b.from ?? b.From); const text = String(b.body ?? b.Body ?? '').trim();
+const errs = [];
+if (!from.e164) errs.push('from must be a phone number');
+if (!text) errs.push('body is required');
+const m = text.match(/^\s*(STOP|STOPALL|UNSUBSCRIBE|CANCEL|END|QUIT)[\s.!]*$/i);
+const word = m ? m[1].toUpperCase() : '';
+const isStop = !!m;
+return { json: { ok: errs.length === 0, errors: errs, phone: from.e164, text, is_stop: errs.length === 0 && isStop, keyword: word } };`), [520, 300]);
+  w.add(iff('Valid?', '={{ $json.ok }}'), [780, 300]);
+  w.add(respond('Respond 400', J(`{ status: 'rejected', reason: $('Read Message').first().json.errors.join('; ') }`), 400), [1040, 460]);
+  w.add(iff('Is STOP?', '={{ $json.is_stop }}'), [1040, 300]);
+  w.add(respond('Respond Ignored', J(`{ status: 'ignored', reason: 'not an opt-out message' }`)), [1300, 460]);
+  w.add(dtGet('Already Opted Out?', 'sms_optout', { phone: `={{ $('Read Message').first().json.phone }}` }), [1300, 300]);
+  w.add(iff('Is Listed?', `={{ $json.id !== undefined && $json.id !== null }}`), [1560, 300]);
+  w.add(respond('Respond Already', J(`{ status: 'already_opted_out', note: 'no second confirmation sent' }`)), [1820, 160]);
+  w.add(dtInsert('Save Opt-Out', 'sms_optout', { phone: `={{ $('Read Message').first().json.phone }}`, keyword: `={{ $('Read Message').first().json.keyword }}`, source: 'inbound SMS', at: NOW }), [1820, 400]);
+  // The one confirmation. It does not say "Reply STOP": the customer has just done that.
+  w.add(smsCall('Confirm Opt-Out', { to: `$('Read Message').first().json.phone`,
+    body: `${CFG('business_name')} + ': you are opted out and will not get any more texts from us.'` }), [2080, 400]);
+  w.add(respond('Respond Recorded', J(`{ status: 'opted_out', phone: $('Read Message').first().json.phone, confirmation_sent: $json.statusCode >= 200 && $json.statusCode < 300 }`)), [2340, 400]);
+  w.link('Inbound SMS', 'Config'); w.link('Config', 'Read Message'); w.link('Read Message', 'Valid?'); w.link('Valid?', 'Is STOP?', { out: 0 }); w.link('Valid?', 'Respond 400', { out: 1 });
+  w.link('Is STOP?', 'Already Opted Out?', { out: 0 }); w.link('Is STOP?', 'Respond Ignored', { out: 1 });
+  w.link('Already Opted Out?', 'Is Listed?'); w.link('Is Listed?', 'Respond Already', { out: 0 }); w.link('Is Listed?', 'Save Opt-Out', { out: 1 });
+  w.link('Save Opt-Out', 'Confirm Opt-Out'); w.link('Confirm Opt-Out', 'Respond Recorded');
+  out('sms-stop-handler.json', w);
+}
+
+// 12c. review-booster: ask every customer for a Google review after a job is completed.
+{
+  const w = new WF('review-booster', { errorWorkflow: ERR_WF, ...AGENT_TZ });
+  w.add(sticky('Note: everyone is asked', '**Every customer is asked.** Each completed job gets one review request. Nothing in this workflow picks customers by how they felt about the job, and nothing should be added that does: Google does not allow asking only some customers for reviews. The text links straight to the business\'s Google review page (`review_link` in Config).', 520, 200, 3), [0, -380]);
+  w.add(sticky('Note: wiring and swap', '**Trigger:** POST a JSON body `{job_id, customer_name, customer_mobile, customer_email, completed_at}` to this webhook when a job is marked complete. Any job tool that can send a webhook (ServiceM8, Tradify, simPRO, Fergus, AroFlo, Jobber) can be pointed at it, or upload a CSV and post one row per job.\n\n' + SMS_SWAP + '\n\nThe email step uses an n8n SMTP credential shown as "Email (replace me)".', 640, 300), [560, -380]);
+  w.add(webhook('Job Completed', 'POST', 'review-booster/job-completed'), [0, 300]);
+  w.add(cfgNode({ business_name: DEMO_BUSINESS, review_link: 'https://example.com/demo-google-review', sender_id: 'GCPlumbing', delay_seconds: 0,
+    sms_api_url: SMS_URL, email_from: 'jobs@example.com', alert_recipient: '+61491570313' }), [260, 300]);
+  w.add(code('Check Input', PHONE_JS + String.raw`
+const b = $json.body || {};
+const jobId = String(b.job_id ?? '').trim(); const name = String(b.customer_name ?? '').trim();
+const email = String(b.customer_email ?? '').trim(); const mobileRaw = String(b.customer_mobile ?? '').trim(); const at = String(b.completed_at ?? '').trim();
+const p = phoneKind(mobileRaw); const emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
+const errs = [];
+if (!jobId) errs.push('job_id is required');
+if (!name) errs.push('customer_name is required');
+if (!at || Number.isNaN(Date.parse(at))) errs.push('completed_at is required, as a date and time like 2026-10-20T10:15:00+10:00');
+if (email && !emailOk) errs.push('customer_email is not a valid email address');
+if (!p.mobile && !emailOk && !email) errs.push(mobileRaw ? 'customer_mobile is not an Australian mobile number, and no customer_email was given to use instead' : 'give a customer_mobile or a customer_email');
+return { json: { ok: errs.length === 0, errors: errs, job_id: jobId, customer_name: name, first_name: name.split(/\s+/)[0], phone: p.mobile ? p.e164 : '',
+  email: emailOk ? email : '', channel: p.mobile ? 'sms' : 'email', completed_at: at } };`), [520, 300]);
+  const ci = (k) => `$('Check Input').first().json.${k}`;
+  w.add(iff('Valid?', '={{ $json.ok }}'), [780, 300]);
+  w.add(respond('Respond 400', J(`{ status: 'rejected', reason: ${ci('errors')}.join('; ') }`), 400), [1040, 480]);
+  w.add(dtGet('Already Asked?', 'review_requests', { job_id: `={{ ${ci('job_id')} }}` }), [1040, 300]);
+  w.add(iff('Is Duplicate?', `={{ $json.id !== undefined && $json.id !== null }}`), [1300, 300]);
+  w.add(respond('Respond Duplicate', J(`{ status: 'duplicate', job_id: ${ci('job_id')}, note: 'this job has already been asked, nothing sent' }`)), [1560, 160]);
+  w.add(dtInsert('Claim Job', 'review_requests', { job_id: `={{ ${ci('job_id')} }}`, customer_name: `={{ ${ci('customer_name')} }}`, contact: `={{ ${ci('phone')} || ${ci('email')} }}`,
+    channel: `={{ ${ci('channel')} }}`, status: 'queued', detail: '', at: NOW }), [1560, 400]);
+  w.add(respond('Respond Queued', J(`{ status: 'queued', job_id: ${ci('job_id')}, channel: ${ci('channel')}, delay_seconds: ${CFG('delay_seconds')} }`), 202), [1820, 400]);
+  w.add(wait('Delay', `={{ ${CFG('delay_seconds')} }}`), [2080, 400]);
+  w.add(dtGet('Opt-Out Lookup', 'sms_optout', { phone: `={{ ${ci('phone')} || 'no-phone' }}` }), [2340, 400]);
+  w.add(iff('Opted Out?', `={{ $json.id !== undefined && $json.id !== null }}`), [2600, 400]);
+  w.add(dtUpdate('Mark Skipped', 'review_requests', { job_id: `={{ ${ci('job_id')} }}` }, { status: 'skipped_opt_out', detail: 'number is on the STOP list, nothing sent' }), [2860, 280]);
+  w.add(iff('Has Mobile?', `={{ ${ci('channel')} === 'sms' }}`), [2860, 520]);
+  w.add(smsCall('Send Review SMS', { to: ci('phone'),
+    body: `'Hi ' + ${ci('first_name')} + ', thanks for choosing ' + ${CFG('business_name')} + '. Would you leave us a quick Google review? ' + ${CFG('review_link')}${smsFooter}` }), [3120, 440]);
+  w.add(dtUpdate('Mark SMS Result', 'review_requests', { job_id: `={{ ${ci('job_id')} }}` },
+    { status: `={{ $json.statusCode >= 200 && $json.statusCode < 300 ? 'sms_sent' : 'sms_failed' }}`, detail: `={{ 'SMS API answered ' + ($json.statusCode ?? 'nothing') }}` }), [3380, 440]);
+  w.add(emailNode('Send Review Email', { to: `={{ ${ci('email')} }}`, subject: `={{ 'Thanks for choosing ' + ${CFG('business_name')} }}`,
+    text: `={{ 'Hi ' + ${ci('first_name')} + ',\\n\\nThanks for choosing ' + ${CFG('business_name')} + '. Would you leave us a quick Google review? ' + ${CFG('review_link')} + '\\n\\nIf you would rather not get messages like this, reply and say STOP.' }}` }), [3120, 620]);
+  w.add(dtUpdate('Mark Email Result', 'review_requests', { job_id: `={{ ${ci('job_id')} }}` },
+    { status: `={{ $json.error ? 'email_failed' : 'email_sent' }}`, detail: `={{ $json.error ? String($json.error.message || $json.error).slice(0, 200) : 'email handed to the mail server' }}` }), [3380, 620]);
+  w.link('Job Completed', 'Config'); w.link('Config', 'Check Input'); w.link('Check Input', 'Valid?'); w.link('Valid?', 'Already Asked?', { out: 0 }); w.link('Valid?', 'Respond 400', { out: 1 });
+  w.link('Already Asked?', 'Is Duplicate?'); w.link('Is Duplicate?', 'Respond Duplicate', { out: 0 }); w.link('Is Duplicate?', 'Claim Job', { out: 1 });
+  w.link('Claim Job', 'Respond Queued'); w.link('Respond Queued', 'Delay'); w.link('Delay', 'Opt-Out Lookup'); w.link('Opt-Out Lookup', 'Opted Out?');
+  w.link('Opted Out?', 'Mark Skipped', { out: 0 }); w.link('Opted Out?', 'Has Mobile?', { out: 1 });
+  w.link('Has Mobile?', 'Send Review SMS', { out: 0 }); w.link('Has Mobile?', 'Send Review Email', { out: 1 });
+  w.link('Send Review SMS', 'Mark SMS Result'); w.link('Send Review Email', 'Mark Email Result');
+  out('review-booster.json', w);
+}
+
+// 12d. missed-call-text-back: text a caller we missed, record the lead, tell the owner.
+{
+  const w = new WF('missed-call-text-back', { errorWorkflow: ERR_WF, ...AGENT_TZ });
+  w.add(sticky('Note: wiring and swap', '**Trigger:** POST `{from, to, called_at, call_status}` to this webhook when a call is missed. A phone provider\'s call-status callback (for example Twilio\'s voice status callback) can be pointed at it. Calls from withheld numbers, from numbers on the never-text list or the STOP list are ignored; one text per caller per 15 minutes; every handled call becomes a row in `leads` and the owner is alerted.\n\n' + SMS_SWAP + '\n\nThe owner email uses an n8n SMTP credential shown as "Email (replace me)".', 700, 300), [0, -400]);
+  w.add(webhook('Missed Call', 'POST', 'missed-call/callback'), [0, 300]);
+  w.add(cfgNode({ business_name: DEMO_BUSINESS, sender_id: 'GCPlumbing', alert_recipient: '+61491570313', alert_email: 'owner@example.com',
+    email_from: 'jobs@example.com', rate_limit_minutes: 15, sms_api_url: SMS_URL }), [260, 300]);
+  w.add(code('Check Call', PHONE_JS + String.raw`
+const b = $json.body || {};
+const fromRaw = String(b.from ?? b.From ?? '').trim(); const to = String(b.to ?? b.To ?? '').trim();
+const at = String(b.called_at ?? '').trim(); const status = String(b.call_status ?? b.CallStatus ?? '').trim().toLowerCase();
+const errs = [];
+if (!fromRaw) errs.push('from is required (use "anonymous" for a withheld number)');
+if (!to) errs.push('to is required');
+if (!at || Number.isNaN(Date.parse(at))) errs.push('called_at is required, as a date and time like 2026-10-20T10:15:00+10:00');
+if (!status) errs.push('call_status is required');
+if (errs.length) return { json: { ok: false, errors: errs } };
+const p = phoneKind(fromRaw);
+let action = 'go', reason = '';
+if (!digits(fromRaw) || /^(anonymous|private|withheld|restricted|unknown|blocked|unavailable|hidden)/i.test(fromRaw)) { action = 'ignore'; reason = 'private_or_withheld_number'; }
+else if (!['no-answer', 'busy', 'canceled', 'missed'].includes(status)) { action = 'ignore'; reason = 'call_status ' + status + ' is not a missed call'; }
+else if (!p.e164) { action = 'ignore'; reason = 'not_a_number_we_can_text_back'; }
+return { json: { ok: true, errors: [], action, reason, caller: p.e164, is_mobile: p.mobile, called_at: at, call_status: status } };`), [520, 300]);
+  const cc = (k) => `$('Check Call').first().json.${k}`;
+  w.add(iff('Valid?', '={{ $json.ok }}'), [780, 300]);
+  w.add(respond('Respond 400', J(`{ status: 'rejected', reason: ${cc('errors')}.join('; ') }`), 400), [1040, 480]);
+  w.add(iff('Worth Handling?', `={{ $json.action === 'go' }}`), [1040, 300]);
+  w.add(respond('Respond Ignored', J(`{ status: 'ignored', reason: ${cc('reason')} }`)), [1300, 480]);
+  const look = (n) => ({ ...n, executeOnce: true });
+  w.add(look(dtGet('Never-Text Lookup', 'sms_never_text', { phone: `={{ ${cc('caller')} }}` })), [1300, 300]);
+  w.add(look(dtGet('Opt-Out Lookup', 'sms_optout', { phone: `={{ ${cc('caller')} }}` })), [1560, 300]);
+  w.add(look(dtGet('Recent Calls Lookup', 'missed_call_log', { caller: `={{ ${cc('caller')} }}` })), [1820, 300]);
+  w.add(code('Decide', String.raw`
+const c = $('Check Call').first().json;
+const listed = (n) => $(n).all().some((i) => i.json && i.json.id !== undefined && i.json.id !== null);
+if (listed('Never-Text Lookup')) return [{ json: { suppress: true, reason: 'on_never_text_list' } }];
+if (listed('Opt-Out Lookup')) return [{ json: { suppress: true, reason: 'on_stop_list' } }];
+const windowMs = Number($('Config').first().json.rate_limit_minutes) * 60000; const t = Date.parse(c.called_at);
+const recent = $input.all().some((i) => i.json && i.json.id !== undefined && i.json.id !== null && ['texting', 'texted', 'not_texted_landline'].includes(i.json.status)
+  && Math.abs(t - Date.parse(i.json.called_at)) < windowMs);
+if (recent) return [{ json: { suppress: true, reason: 'already_texted_within_' + $('Config').first().json.rate_limit_minutes + '_minutes' } }];
+return [{ json: { suppress: false, reason: '' } }];`, 'runOnceForAllItems'), [2080, 300]);
+  w.add(iff('Suppressed?', '={{ $json.suppress }}'), [2340, 300]);
+  w.add(dtInsert('Log Suppressed', 'missed_call_log', { caller: `={{ ${cc('caller')} }}`, called_at: `={{ ${cc('called_at')} }}`, status: 'suppressed', reason: `={{ $('Decide').first().json.reason }}`, at: NOW }), [2600, 160]);
+  w.add(respond('Respond Suppressed', J(`{ status: 'ignored', reason: $('Decide').first().json.reason }`)), [2860, 160]);
+  w.add(dtInsert('Claim Call', 'missed_call_log', { caller: `={{ ${cc('caller')} }}`, called_at: `={{ ${cc('called_at')} }}`, status: 'texting', reason: '', at: NOW }), [2600, 440]);
+  w.add(iff('Is Mobile?', `={{ ${cc('is_mobile')} }}`), [2860, 440]);
+  w.add(smsCall('Send Missed-Call Text', { to: cc('caller'),
+    body: `'Hi, it\\'s ' + ${CFG('business_name')} + '. Sorry we missed your call. Reply here with what you need and we\\'ll get back to you shortly.'${smsFooter}` }), [3120, 340]);
+  w.add(dtUpdate('Mark Texted', 'missed_call_log', { caller: `={{ ${cc('caller')} }}`, called_at: `={{ ${cc('called_at')} }}`, status: 'texting' },
+    { status: `={{ $json.statusCode >= 200 && $json.statusCode < 300 ? 'texted' : 'text_failed' }}`, reason: `={{ 'SMS API answered ' + ($json.statusCode ?? 'nothing') }}` }), [3380, 340]);
+  w.add(dtUpdate('Mark Not Texted', 'missed_call_log', { caller: `={{ ${cc('caller')} }}`, called_at: `={{ ${cc('called_at')} }}`, status: 'texting' },
+    { status: 'not_texted_landline', reason: 'caller is a landline, a text cannot be delivered' }), [3120, 560]);
+  w.add(dtInsert('Save Lead', 'leads', { caller: `={{ ${cc('caller')} }}`, time: `={{ ${cc('called_at')} }}`, status: 'new', note: `={{ ${cc('is_mobile')} ? 'missed call, text-back attempted' : 'missed call from a landline, call back' }}` }), [3640, 440]);
+  w.add(smsCall('Alert Owner SMS', { to: CFG('alert_recipient'),
+    body: `${CFG('business_name')} + ': missed call from ' + ${cc('caller')} + ' at ' + ${cc('called_at')} + '. Added to leads.'` }), [3900, 440]);
+  w.add(emailNode('Alert Owner Email', { to: `={{ ${CFG('alert_email')} }}`, subject: `={{ 'Missed call lead: ' + ${cc('caller')} }}`,
+    text: `={{ 'A call from ' + ${cc('caller')} + ' at ' + ${cc('called_at')} + ' was missed. It is in the leads table with status new.' }}` }), [4160, 440]);
+  w.add(respond('Respond Handled', J(`{ status: 'handled', caller: ${cc('caller')}, texted: ${cc('is_mobile')}, lead: 'new' }`)), [4420, 440]);
+  w.link('Missed Call', 'Config'); w.link('Config', 'Check Call'); w.link('Check Call', 'Valid?'); w.link('Valid?', 'Worth Handling?', { out: 0 }); w.link('Valid?', 'Respond 400', { out: 1 });
+  w.link('Worth Handling?', 'Never-Text Lookup', { out: 0 }); w.link('Worth Handling?', 'Respond Ignored', { out: 1 });
+  w.link('Never-Text Lookup', 'Opt-Out Lookup'); w.link('Opt-Out Lookup', 'Recent Calls Lookup'); w.link('Recent Calls Lookup', 'Decide'); w.link('Decide', 'Suppressed?');
+  w.link('Suppressed?', 'Log Suppressed', { out: 0 }); w.link('Suppressed?', 'Claim Call', { out: 1 }); w.link('Log Suppressed', 'Respond Suppressed');
+  w.link('Claim Call', 'Is Mobile?'); w.link('Is Mobile?', 'Send Missed-Call Text', { out: 0 }); w.link('Is Mobile?', 'Mark Not Texted', { out: 1 });
+  w.link('Send Missed-Call Text', 'Mark Texted'); w.link('Mark Texted', 'Save Lead'); w.link('Mark Not Texted', 'Save Lead');
+  w.link('Save Lead', 'Alert Owner SMS'); w.link('Alert Owner SMS', 'Alert Owner Email'); w.link('Alert Owner Email', 'Respond Handled');
+  out('missed-call-text-back.json', w);
+}
+
 console.log('workflows written');
