@@ -1,5 +1,9 @@
 # n8n automation portfolio (Robert Iuoras)
 
+**For business owners:** these are working examples of the jobs I set up for small businesses: enquiries saved to your CRM once (never twice), new leads scored so the hot ones get a call first, and a help bot that passes a question to a person instead of guessing. They run on test data so anyone can check them. For real client results, see [taskdriver.ai/our-work](https://taskdriver.ai/our-work). To talk about your own business, [book a free 30-minute call](https://calendly.com/robertiuoras/new-meeting).
+
+**For developers:** the detail is below.
+
 Thirteen small automations built in n8n 2.42.5. The first eleven are tested end to end; the last two (12 and 13, the SMS packages) have so far only been checked offline, see their sections. **These are my own demo builds using synthetic data. None of them is client work.** Everything runs on one laptop; the "CRM" is a stand-in (see below), so no third-party accounts are needed.
 
 Test evidence: [tests/RESULTS.md](tests/RESULTS.md) (re-run any time with `bash tests/run.sh`). Canvas pictures: `screenshots/`. Importable workflow files: `workflows/`.
